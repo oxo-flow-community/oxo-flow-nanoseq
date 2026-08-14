@@ -1,0 +1,666 @@
+# oxo-flow port of nf-core/nanoseq 3.1.0 (default-parameters main path).
+#
+# Upstream: https://github.com/nf-core/nanoseq @ 3.1.0
+#   (sha 6e563e54362cddb8e48d15c156251708c22d0e8d)
+# Default path (protocol=DNA, demultiplexing ON, minimap2 aligner):
+#   samplesheet check -> qcat demultiplex -> NanoPlot + FastQC ->
+#   genome prep (samtools faidx x2 + chrom sizes) -> minimap2 index/align ->
+#   samtools view/sort/index -> samtools stats/flagstat/idxstats ->
+#   bedtools genomecov -> bedGraphToBigWig -> MultiQC (+ software versions).
+#
+# Fidelity notes:
+# - Commands mirror the upstream modules byte-for-byte under default params;
+#   upstream Groovy conditionals on params.* are reproduced as bash
+#   conditionals over the same [config] keys.
+# - Upstream process labels (cpus/memory from conf/base.config) are baked
+#   into [rules.resources]. Upstream per-label time caps (4h/8h/16h) are not
+#   ported (scheduler guards only).
+# - The port keys per-sample rules by the *demultiplexed barcode* name
+#   (barcode01, barcode02, ...). Upstream demultiplexes the raw fastq with
+#   qcat into barcode-named files and then joins them onto samplesheet rows
+#   by barcode; oxo-flow has no channel join, so the port's sample identity
+#   IS the barcode. Outputs are named <barcode>.sam/.bam/.bigWig instead of
+#   <group>_R<replicate>.* — see README fidelity table.
+# - publishDir has no oxo-flow equivalent: outputs are written directly at
+#   the published paths (results/qcat, results/nanoplot, results/fastqc,
+#   results/minimap2, results/multiqc/minimap2, results/pipeline_info).
+#   Steps upstream does NOT publish (genome prep, minimap2 index/sam/bam,
+#   GTF2BED) are kept as internal intermediates under the same out_dir.
+# - get_chrom_sizes + samtools_faidx both run `samtools faidx` on the
+#   reference, exactly like upstream (two separate processes).
+# - The upstream NanoPlot process publishes all samples' fixed-named
+#   outputs (NanoPlot-report.html) into one dir, silently clobbering;
+#   the port isolates each sample in nanoplot/<barcode>/.
+# - GTF2BED only runs when the samplesheet/gtf config is set (default path
+#   has no gtf, exactly like upstream where the channel is empty).
+# - Upstream CUSTOM_DUMPSOFTWAREVERSIONS merges per-process versions.yml
+#   collected at run time; the port pins the same versions statically
+#   (assets/versions.yml, tool versions = container tags) and runs the
+#   upstream merge script verbatim (materialized placeholders).
+
+[workflow]
+name = "oxo-flow-nanoseq"
+version = "1.0.0"
+description = "Nanopore demultiplexing (qcat), QC (NanoPlot + FastQC), minimap2 alignment and MultiQC — oxo-flow port of nf-core/nanoseq"
+author = "oxo-flow-community"
+
+[config]
+# -- Samplesheet and demultiplexing input (upstream: --input / --input_path)
+input = "test/fixtures/samplesheet.csv"
+input_path = "test/fixtures/raw/sample.fastq.gz"
+# -- Protocol (upstream: --protocol; mandatory upstream, one of DNA/cDNA/directRNA)
+protocol = "DNA"
+# -- Demultiplexing (upstream defaults)
+barcode_kit = "Auto"
+qcat_min_score = 60
+qcat_detect_middle = false
+skip_demultiplexing = false
+# -- Raw read cleaning (upstream default: off)
+run_nanolyse = false
+# -- Alignment
+aligner = "minimap2"
+stranded = false
+skip_alignment = false
+# -- Reference genome (collapses the samplesheet fasta column; the default
+#    path uses a single reference for all samples, as in the upstream test data)
+reference = "test/fixtures/refs/genome.fa"
+# Basename of the reference; mirrors the upstream staged-file name so that
+# indexes keep the upstream naming (genome.fa.mmi / genome.fa.sizes / genome.fa.fai)
+reference_name = "genome.fa"
+# -- GTF annotation (upstream samplesheet gtf column; empty on the default path)
+gtf = ""
+gtf_base = ""
+# -- QC (upstream defaults: all QC on)
+skip_qc = false
+skip_nanoplot = false
+skip_fastqc = false
+skip_multiqc = false
+# -- Visualisation (upstream defaults: bigwig/bigbed ON; bigbed is
+#    protocol-gated upstream to cDNA/directRNA and so never runs on the
+#    default DNA path)
+skip_bigwig = false
+skip_bigbed = false
+# -- Variant calling (upstream default: off)
+call_variants = false
+# -- MultiQC options
+multiqc_title = ""
+multiqc_config = ""
+# -- Output directory (upstream: --outdir, default ./results)
+out_dir = "results"
+
+# One sample source per port (playbook §2.4): the demultiplexed barcodes.
+# qcat names its outputs fastq/barcode01.fastq.gz, fastq/barcode02.fastq.gz, ...
+# — these ARE the port's per-sample files (see fidelity notes above).
+[[sample_groups]]
+name = "cohort"
+samples = ["barcode01", "barcode02"]
+
+# ---------------------------------------------------------------------------
+# 1. Samplesheet check (upstream: SAMPLESHEET_CHECK, label process_single)
+# ---------------------------------------------------------------------------
+[[rules]]
+name = "samplesheet_check"
+input = ["{config.input}"]
+output = ["{config.out_dir}/pipeline_info/samplesheet.valid.csv"]
+description = "Validate the input samplesheet with check_samplesheet.py"
+shell = """
+python3 scripts/check_samplesheet.py \\
+    {config.input} \\
+    not_changed \\
+    {config.out_dir}/pipeline_info/samplesheet.valid.csv
+"""
+
+[rules.resources]
+threads = 1
+memory = "6G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/python:3.8.3"
+
+# ---------------------------------------------------------------------------
+# 2. Demultiplex (upstream: QCAT, label process_medium)
+#    Runs once on the raw fastq; qcat writes one fastq per detected barcode.
+#    The declared outputs are the barcode set of the ported default path
+#    (upstream emits fastq/*.fastq.gz dynamically for whatever barcodes the
+#    kit/data contain).
+# ---------------------------------------------------------------------------
+[[rules]]
+name = "qcat"
+input = ["{config.input_path}"]
+output = [
+    "{config.out_dir}/qcat/fastq/barcode01.fastq.gz",
+    "{config.out_dir}/qcat/fastq/barcode02.fastq.gz",
+]
+description = "Demultiplex the raw nanopore fastq with qcat"
+when = "!config.skip_demultiplexing"
+shell = """
+## Unzip fastq file (qcat does not support zipped files)
+FILE={config.input_path}
+if [[ $FILE == *.gz ]]
+then
+zcat {config.input_path} > unzipped.fastq
+FILE=unzipped.fastq
+fi
+## --detect-middle only when requested (upstream: params.qcat_detect_middle)
+DETECT_MIDDLE=""
+[ "{config.qcat_detect_middle}" = "true" ] && DETECT_MIDDLE="--detect-middle true"
+mkdir -p {config.out_dir}/qcat/fastq
+qcat \\
+    -f $FILE \\
+    -b {config.out_dir}/qcat/fastq \\
+    --kit {config.barcode_kit} \\
+    --min-score {config.qcat_min_score} \\
+    $DETECT_MIDDLE
+
+## Zip fastq files (gzip, as upstream)
+gzip {config.out_dir}/qcat/fastq/*
+"""
+
+[rules.resources]
+threads = 6
+memory = "42G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/qcat:1.1.0--py_0"
+
+# ---------------------------------------------------------------------------
+# 3. NanoPlot QC (upstream: NANOPLOT, label process_low)
+# ---------------------------------------------------------------------------
+[[rules]]
+name = "nanoplot"
+input = ["{config.out_dir}/qcat/fastq/{sample}.fastq.gz"]
+output = [
+    "{config.out_dir}/nanoplot/{sample}/NanoPlot-report.html",
+    "{config.out_dir}/nanoplot/{sample}/NanoPlot-data.tsv.gz",
+    "{config.out_dir}/nanoplot/{sample}/NanoPlot.log",
+]
+description = "FastQ QC with NanoPlot"
+when = "!config.skip_qc && !config.skip_nanoplot"
+shell = """
+NanoPlot \\
+    -t {threads} \\
+    --fastq {input[0]}
+
+## upstream publishes *.html/*.txt/*.log per sample into results/nanoplot/
+## (fixed output names); the port isolates each sample in its own subdir
+mkdir -p {config.out_dir}/nanoplot/{sample}
+mv NanoPlot-report.html {output[0]}
+mv NanoPlot-data.tsv.gz {output[1]}
+mv NanoPlot.log {output[2]}
+"""
+
+[rules.resources]
+threads = 2
+memory = "12G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/nanoplot:1.41.0--pyhdfd78af_0"
+
+# ---------------------------------------------------------------------------
+# 4. FastQC (upstream: FASTQC, label process_medium)
+# ---------------------------------------------------------------------------
+[[rules]]
+name = "fastqc"
+input = ["{config.out_dir}/qcat/fastq/{sample}.fastq.gz"]
+output = [
+    "{config.out_dir}/fastqc/{sample}_fastqc.html",
+    "{config.out_dir}/fastqc/{sample}_fastqc.zip",
+]
+description = "FastQ QC with FastQC"
+when = "!config.skip_qc && !config.skip_fastqc"
+shell = """
+## Upstream renames the read to <prefix>.fastq.gz before QC so MultiQC
+## sees per-sample names
+printf "%s %s\\n" {input[0]} {sample}.fastq.gz | while read old_name new_name; do
+    [ -f "${new_name}" ] || ln -s $old_name $new_name
+done
+fastqc --threads {threads} {sample}.fastq.gz
+
+mv {sample}_fastqc.html {output[0]}
+mv {sample}_fastqc.zip {output[1]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "42G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/fastqc:0.11.9--0"
+
+# ---------------------------------------------------------------------------
+# 5. Chromosome sizes (upstream: GET_CHROM_SIZES, label process_medium)
+#    Runs `samtools faidx` + `cut` on a local copy of the reference, exactly
+#    like the upstream workdir-staged fasta.
+# ---------------------------------------------------------------------------
+[[rules]]
+name = "get_chrom_sizes"
+input = ["{config.reference}"]
+output = ["{config.out_dir}/genome/{config.reference_name}.sizes"]
+description = "Make a chromosome sizes file from the reference fasta"
+when = "!config.skip_alignment"
+shell = """
+ln -sf {config.reference} {config.reference_name}
+samtools faidx {config.reference_name}
+cut -f 1,2 {config.reference_name}.fai > {config.out_dir}/genome/{config.reference_name}.sizes
+"""
+
+[rules.resources]
+threads = 6
+memory = "42G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/samtools:1.13--h8c37831_0"
+
+# ---------------------------------------------------------------------------
+# 6. Reference faidx (upstream: SAMTOOLS_FAIDX, label process_single)
+#    A separate samtools faidx run, exactly like upstream (PREPARE_GENOME
+#    runs GET_CHROM_SIZES AND SAMTOOLS_FAIDX).
+# ---------------------------------------------------------------------------
+[[rules]]
+name = "samtools_faidx"
+input = ["{config.reference}"]
+output = ["{config.out_dir}/genome/{config.reference_name}.fai"]
+description = "Index the reference fasta with samtools faidx"
+when = "!config.skip_alignment"
+shell = """
+ln -sf {config.reference} {config.reference_name}
+samtools \\
+    faidx \\
+    {config.reference_name}
+mv {config.reference_name}.fai {output[0]}
+"""
+
+[rules.resources]
+threads = 1
+memory = "6G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/samtools:1.16.1--h6899075_1"
+
+# ---------------------------------------------------------------------------
+# 7. GTF -> BED12 (upstream: GTF2BED, label process_low)
+#    Off on the default path: upstream only runs it when the samplesheet
+#    carries a gtf column (set config.gtf + config.gtf_base to enable).
+# ---------------------------------------------------------------------------
+[[rules]]
+name = "gtf2bed"
+input = ["{config.gtf}"]
+output = ["{config.out_dir}/genome/{config.gtf_base}.bed"]
+description = "Convert GTF to BED12 with gtf2bed (perl script, as upstream)"
+when = 'config.gtf != ""'
+shell = """
+perl scripts/gtf2bed {config.gtf} > {config.out_dir}/genome/{config.gtf_base}.bed
+"""
+
+[rules.resources]
+threads = 2
+memory = "12G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/perl:5.26.2"
+
+# ---------------------------------------------------------------------------
+# 8. minimap2 index (upstream: MINIMAP2_INDEX, label process_high)
+#    Default params (protocol=DNA): -ax map-ont, no -k14, no -uf,
+#    no --junc-bed — the Groovy conditionals are reproduced verbatim.
+# ---------------------------------------------------------------------------
+[[rules]]
+name = "minimap2_index"
+input = [
+    "{config.reference}",
+    "{config.out_dir}/genome/{config.reference_name}.sizes",
+]
+output = ["{config.out_dir}/minimap2/{config.reference_name}.mmi"]
+description = "Create a minimap2 index of the reference"
+when = "!config.skip_alignment"
+shell = """
+## Upstream: preset = (protocol == 'DNA' || is_transcripts) ? "-ax map-ont" : "-ax splice"
+PRESET="-ax map-ont"
+[ "{config.protocol}" != "DNA" ] && PRESET="-ax splice"
+## kmer = (protocol == 'directRNA') ? "-k14" : ""
+KMER=""
+[ "{config.protocol}" = "directRNA" ] && KMER="-k14"
+## stranded = (stranded || protocol == 'directRNA') ? "-uf" : ""
+STRANDED=""
+if [ "{config.stranded}" = "true" ] || [ "{config.protocol}" = "directRNA" ]; then STRANDED="-uf"; fi
+## junctions = (protocol != 'DNA' && bed) ? "--junc-bed <bed>" : ""
+JUNCTIONS=""
+if [ "{config.protocol}" != "DNA" ] && [ -n "{config.gtf_base}" ]; then JUNCTIONS="--junc-bed {config.out_dir}/genome/{config.gtf_base}.bed"; fi
+
+minimap2 \\
+    $PRESET \\
+    $KMER \\
+    $STRANDED \\
+    $JUNCTIONS \\
+    -t {threads} \\
+    -d {config.out_dir}/minimap2/{config.reference_name}.mmi \\
+    {config.reference}
+"""
+
+[rules.resources]
+threads = 12
+memory = "84G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/minimap2:2.17--hed695b0_3"
+
+# ---------------------------------------------------------------------------
+# 9. minimap2 align (upstream: MINIMAP2_ALIGN, label process_medium)
+# ---------------------------------------------------------------------------
+[[rules]]
+name = "minimap2_align"
+input = [
+    "{config.out_dir}/qcat/fastq/{sample}.fastq.gz",
+    "{config.out_dir}/minimap2/{config.reference_name}.mmi",
+]
+output = ["{config.out_dir}/minimap2/{sample}.sam"]
+description = "Map reads with minimap2"
+when = "!config.skip_alignment"
+shell = """
+## Same preset/kmer/stranded/junctions logic as MINIMAP2_INDEX
+PRESET="-ax map-ont"
+[ "{config.protocol}" != "DNA" ] && PRESET="-ax splice"
+KMER=""
+[ "{config.protocol}" = "directRNA" ] && KMER="-k14"
+STRANDED=""
+if [ "{config.stranded}" = "true" ] || [ "{config.protocol}" = "directRNA" ]; then STRANDED="-uf"; fi
+JUNCTIONS=""
+if [ "{config.protocol}" != "DNA" ] && [ -n "{config.gtf_base}" ]; then JUNCTIONS="--junc-bed {config.out_dir}/genome/{config.gtf_base}.bed"; fi
+## md = (call_variants && protocol == 'DNA') ? "--MD" : ""
+MD=""
+if [ "{config.call_variants}" = "true" ] && [ "{config.protocol}" = "DNA" ]; then MD="--MD"; fi
+
+minimap2 \\
+    $PRESET \\
+    $KMER \\
+    $STRANDED \\
+    $JUNCTIONS \\
+    $MD \\
+    -t {threads} \\
+    {config.out_dir}/minimap2/{config.reference_name}.mmi \\
+    {input[0]} > {config.out_dir}/minimap2/{sample}.sam
+"""
+
+[rules.resources]
+threads = 6
+memory = "42G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/minimap2:2.17--hed695b0_3"
+
+# ---------------------------------------------------------------------------
+# 10. Sam -> Bam (upstream: SAMTOOLS_VIEW_BAM, label process_medium)
+# ---------------------------------------------------------------------------
+[[rules]]
+name = "samtools_view"
+input = ["{config.out_dir}/minimap2/{sample}.sam"]
+output = ["{config.out_dir}/minimap2/{sample}.bam"]
+description = "Convert SAM to BAM with samtools view"
+when = "!config.skip_alignment"
+shell = """
+samtools view -b -h -O BAM -@ {threads} -o {config.out_dir}/minimap2/{sample}.bam {input[0]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "42G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/samtools:1.15.1--h1170115_0"
+
+# ---------------------------------------------------------------------------
+# 11. Sort BAM (upstream: SAMTOOLS_SORT, label process_medium,
+#     ext.prefix = "<sample>.sorted")
+# ---------------------------------------------------------------------------
+[[rules]]
+name = "samtools_sort"
+input = ["{config.out_dir}/minimap2/{sample}.bam"]
+output = ["{config.out_dir}/minimap2/{sample}.sorted.bam"]
+description = "Sort BAM with samtools sort"
+when = "!config.skip_alignment"
+shell = """
+samtools sort -@ {threads} -o {config.out_dir}/minimap2/{sample}.sorted.bam -T {sample}.sorted {input[0]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "42G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/samtools:1.16.1--h6899075_1"
+
+# ---------------------------------------------------------------------------
+# 12. Index BAM (upstream: SAMTOOLS_INDEX, label process_low,
+#     -@ <cpus-1>)
+# ---------------------------------------------------------------------------
+[[rules]]
+name = "samtools_index"
+input = ["{config.out_dir}/minimap2/{sample}.sorted.bam"]
+output = ["{config.out_dir}/minimap2/{sample}.sorted.bam.bai"]
+description = "Index the sorted BAM with samtools index"
+when = "!config.skip_alignment"
+shell = """
+samtools \\
+    index \\
+    -@ $(({threads} - 1)) \\
+    {input[0]}
+"""
+
+[rules.resources]
+threads = 2
+memory = "12G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/samtools:1.16.1--h6899075_1"
+
+# ---------------------------------------------------------------------------
+# 13. samtools stats (upstream: SAMTOOLS_STATS, label process_single)
+# ---------------------------------------------------------------------------
+[[rules]]
+name = "samtools_stats"
+input = [
+    "{config.out_dir}/minimap2/{sample}.sorted.bam",
+    "{config.out_dir}/minimap2/{sample}.sorted.bam.bai",
+    "{config.reference}",
+]
+output = ["{config.out_dir}/minimap2/samtools_stats/{sample}.stats"]
+description = "Run samtools stats on the sorted BAM"
+when = "!config.skip_alignment"
+shell = """
+samtools \\
+    stats \\
+    --threads {threads} \\
+    --reference {config.reference} \\
+    {input[0]} \\
+    > {config.out_dir}/minimap2/samtools_stats/{sample}.stats
+"""
+
+[rules.resources]
+threads = 1
+memory = "6G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/samtools:1.16.1--h6899075_1"
+
+# ---------------------------------------------------------------------------
+# 14. samtools idxstats (upstream: SAMTOOLS_IDXSTATS, label process_single,
+#     --threads <cpus-1>)
+# ---------------------------------------------------------------------------
+[[rules]]
+name = "samtools_idxstats"
+input = [
+    "{config.out_dir}/minimap2/{sample}.sorted.bam",
+    "{config.out_dir}/minimap2/{sample}.sorted.bam.bai",
+]
+output = ["{config.out_dir}/minimap2/samtools_stats/{sample}.idxstats"]
+description = "Run samtools idxstats on the sorted BAM"
+when = "!config.skip_alignment"
+shell = """
+samtools \\
+    idxstats \\
+    --threads $(({threads} - 1)) \\
+    {input[0]} \\
+    > {config.out_dir}/minimap2/samtools_stats/{sample}.idxstats
+"""
+
+[rules.resources]
+threads = 1
+memory = "6G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/samtools:1.16.1--h6899075_1"
+
+# ---------------------------------------------------------------------------
+# 15. samtools flagstat (upstream: SAMTOOLS_FLAGSTAT, label process_single)
+# ---------------------------------------------------------------------------
+[[rules]]
+name = "samtools_flagstat"
+input = [
+    "{config.out_dir}/minimap2/{sample}.sorted.bam",
+    "{config.out_dir}/minimap2/{sample}.sorted.bam.bai",
+]
+output = ["{config.out_dir}/minimap2/samtools_stats/{sample}.flagstat"]
+description = "Run samtools flagstat on the sorted BAM"
+when = "!config.skip_alignment"
+shell = """
+samtools \\
+    flagstat \\
+    --threads {threads} \\
+    {input[0]} \\
+    > {config.out_dir}/minimap2/samtools_stats/{sample}.flagstat
+"""
+
+[rules.resources]
+threads = 1
+memory = "6G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/samtools:1.16.1--h6899075_1"
+
+# ---------------------------------------------------------------------------
+# 16. BAM -> BEDGraph (upstream: BEDTOOLS_GENOMECOV, label process_medium)
+#     Upstream hardcodes -split in the command (the computed `split` var is
+#     dead code upstream) — the port keeps -split exactly.
+# ---------------------------------------------------------------------------
+[[rules]]
+name = "bedtools_genomecov"
+input = [
+    "{config.out_dir}/minimap2/{sample}.sorted.bam",
+    "{config.out_dir}/minimap2/{sample}.sorted.bam.bai",
+]
+output = ["{config.out_dir}/minimap2/bigwig/{sample}.bedGraph"]
+description = "Convert BAM to BEDGraph with bedtools genomecov"
+when = "!config.skip_alignment && !config.skip_bigwig"
+shell = """
+bedtools \\
+    genomecov \\
+    -split \\
+    -ibam {input[0]} \\
+    -bg \\
+    | bedtools sort > {config.out_dir}/minimap2/bigwig/{sample}.bedGraph
+"""
+
+[rules.resources]
+threads = 6
+memory = "42G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/bedtools:2.29.2--hc088bd4_0"
+
+# ---------------------------------------------------------------------------
+# 17. BEDGraph -> BigWig (upstream: UCSC_BEDGRAPHTOBIGWIG,
+#     label process_medium)
+# ---------------------------------------------------------------------------
+[[rules]]
+name = "ucsc_bedgraphtobigwig"
+input = [
+    "{config.out_dir}/minimap2/bigwig/{sample}.bedGraph",
+    "{config.out_dir}/genome/{config.reference_name}.sizes",
+]
+output = ["{config.out_dir}/minimap2/bigwig/{sample}.bigWig"]
+description = "Convert BEDGraph to BigWig with bedGraphToBigWig"
+when = "!config.skip_alignment && !config.skip_bigwig"
+shell = """
+bedGraphToBigWig {input[0]} {input[1]} {config.out_dir}/minimap2/bigwig/{sample}.bigWig
+"""
+
+[rules.resources]
+threads = 6
+memory = "42G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/ucsc-bedgraphtobigwig:377--h446ed27_1"
+
+# ---------------------------------------------------------------------------
+# 18. Software versions (upstream: CUSTOM_DUMPSOFTWAREVERSIONS,
+#     label process_single). Upstream merges per-process versions.yml files
+#     collected at run time; the port merges the statically pinned
+#     assets/versions.yml with the same upstream merge script.
+# ---------------------------------------------------------------------------
+[[rules]]
+name = "dumpsoftwareversions"
+input = ["assets/versions.yml"]
+output = [
+    "{config.out_dir}/pipeline_info/software_versions.yml",
+    "{config.out_dir}/pipeline_info/software_versions_mqc.yml",
+]
+description = "Merge per-tool versions into MultiQC-ready yml files"
+shell = """
+python3 scripts/dumpsoftwareversions.py {input[0]} {config.out_dir}/pipeline_info
+"""
+
+[rules.resources]
+threads = 1
+memory = "6G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/multiqc:1.13--pyhdfd78af_0"
+
+# ---------------------------------------------------------------------------
+# 19. MultiQC (upstream: MULTIQC, label process_medium)
+#     Gather rule: collects FastQC + samtools stats outputs per sample plus
+#     the software-versions and pipeline-summary ymls, then runs
+#     `multiqc -f .` exactly like upstream.
+# ---------------------------------------------------------------------------
+[[rules]]
+name = "multiqc"
+input = [
+    "assets/multiqc_config.yml",
+    "assets/workflow_summary_mqc.yaml",
+    "{config.out_dir}/pipeline_info/software_versions_mqc.yml",
+]
+expand_inputs = [
+    { pattern = "{config.out_dir}/fastqc/{sample}_fastqc.zip",  variables = { sample = "config.samples_list" } },
+    { pattern = "{config.out_dir}/fastqc/{sample}_fastqc.html", variables = { sample = "config.samples_list" } },
+    { pattern = "{config.out_dir}/minimap2/samtools_stats/{sample}.stats",     variables = { sample = "config.samples_list" } },
+    { pattern = "{config.out_dir}/minimap2/samtools_stats/{sample}.flagstat",  variables = { sample = "config.samples_list" } },
+    { pattern = "{config.out_dir}/minimap2/samtools_stats/{sample}.idxstats",  variables = { sample = "config.samples_list" } },
+]
+output = ["{config.out_dir}/multiqc/minimap2/multiqc_report.html"]
+description = "Aggregate QC and alignment stats into a MultiQC report"
+when = "!config.skip_multiqc"
+shell = """
+## Upstream stages all report inputs into one dir and runs `multiqc -f .`
+OUT={config.out_dir}/multiqc/minimap2
+mkdir -p "$OUT"
+for f in {input}; do
+    ln -sf "$f" "$OUT/"
+done
+cd "$OUT"
+ARGS=""
+[ -n "{config.multiqc_title}" ] && ARGS="--title \\"{config.multiqc_title}\\""
+CUSTOM_CONFIG=""
+[ -n "{config.multiqc_config}" ] && CUSTOM_CONFIG="--config {config.multiqc_config}"
+multiqc \\
+    -f \\
+    $ARGS \\
+    $CUSTOM_CONFIG \\
+    .
+"""
+
+[rules.resources]
+threads = 6
+memory = "42G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/multiqc:1.11--pyhdfd78af_0"

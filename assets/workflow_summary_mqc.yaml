@@ -1,0 +1,21 @@
+# Static pipeline summary for the MultiQC report.
+#
+# Upstream nf-core/nanoseq generates this from the params summary at run
+# time (WorkflowNanoseq.paramsSummaryMultiqc). The port ships the equivalent
+# static summary of the ported default parameters.
+id: "nf-core-nanoseq-summary"
+section_name: "nf-core/nanoseq Workflow Summary"
+section_href: "https://github.com/nf-core/nanoseq"
+plot_type: "html"
+description: "is an automatically generated summary from the nf-core pipeline."
+data: |
+    <dl class="dl-horizontal">
+    <dt>Pipeline Name</dt><dd><samp>nf-core/nanoseq</samp></dd>
+    <dt>Pipeline Version</dt><dd><samp>3.1.0</samp></dd>
+    <dt>Protocol</dt><dd><samp>DNA</samp></dd>
+    <dt>Aligner</dt><dd><samp>minimap2</samp></dd>
+    <dt>Barcode Kit</dt><dd><samp>Auto</samp></dd>
+    <dt>Demultiplexing</dt><dd><samp>enabled</samp></dd>
+    <dt>NanoLyse</dt><dd><samp>disabled</samp></dd>
+    <dt>Variant calling</dt><dd><samp>disabled</samp></dd>
+    </dl>

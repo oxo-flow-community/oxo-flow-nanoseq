@@ -1,0 +1,44 @@
+# Static software versions for the oxo-flow/nanoseq port.
+#
+# Upstream nf-core/nanoseq collects per-process versions.yml at run time and
+# merges them with custom_dumpsoftwareversions. The port pins the same
+# versions statically: every value below is the exact container tag shipped
+# in [rules.environment] of the corresponding rule (see README fidelity
+# table). The merge script (scripts/dumpsoftwareversions.py) is the upstream
+# template with its Groovy placeholders materialized.
+"nanoseq:samplesheet_check":
+    python: 3.8.3
+"nanoseq:qcat":
+    qcat: 1.1.0
+"nanoseq:nanoplot":
+    nanoplot: 1.41.0
+"nanoseq:fastqc":
+    fastqc: 0.11.9
+"nanoseq:get_chrom_sizes":
+    samtools: 1.13
+"nanoseq:gtf2bed":
+    perl: 5.26.2
+"nanoseq:samtools_faidx":
+    samtools: 1.16.1
+"nanoseq:minimap2_index":
+    minimap2: 2.17
+"nanoseq:minimap2_align":
+    minimap2: 2.17
+"nanoseq:samtools_view":
+    samtools: 1.15.1
+"nanoseq:samtools_sort":
+    samtools: 1.16.1
+"nanoseq:samtools_index":
+    samtools: 1.16.1
+"nanoseq:samtools_stats":
+    samtools: 1.16.1
+"nanoseq:samtools_idxstats":
+    samtools: 1.16.1
+"nanoseq:samtools_flagstat":
+    samtools: 1.16.1
+"nanoseq:bedtools_genomecov":
+    bedtools: 2.29.2
+"nanoseq:ucsc_bedgraphtobigwig":
+    ucsc_bedgraphtobigwig: 377
+"nanoseq:multiqc":
+    multiqc: 1.11

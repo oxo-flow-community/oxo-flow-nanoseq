@@ -1,0 +1,53 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "oxo-flow port metadata",
+  "name": "oxo-flow-nanoseq",
+  "title": "nf-core/nanoseq (oxo-flow port)",
+  "engine": "oxo-flow",
+  "source": {
+    "repo": "nf-core/nanoseq",
+    "url": "https://github.com/nf-core/nanoseq",
+    "tag": "3.1.0",
+    "sha": "6e563e54362cddb8e48d15c156251708c22d0e8d",
+    "license": "MIT"
+  },
+  "created": "2026-08-15",
+  "domain": "genomics",
+  "tags": ["nanopore", "long-read", "demultiplexing", "alignment", "qcat", "minimap2", "multiqc", "nf-core"],
+  "description": "oxo-flow port of nf-core/nanoseq 3.1.0 (DNA default path): samplesheet check, qcat demultiplexing, NanoPlot + FastQC QC, minimap2 alignment, samtools view/sort/index, samtools stats/flagstat/idxstats, BigWig coverage tracks and MultiQC reporting.",
+  "scope": ["samplesheet_check", "qcat", "nanoplot", "fastqc", "get_chrom_sizes", "samtools_faidx", "gtf2bed", "minimap2_index", "minimap2_align", "samtools_view", "samtools_sort", "samtools_index", "samtools_stats", "samtools_idxstats", "samtools_flagstat", "bedtools_genomecov", "ucsc_bedgraphtobigwig", "dumpsoftwareversions", "multiqc"],
+  "excluded": [
+    "graphmap2 index/align (aligner off by default; committee exclusion longread_map)",
+    "nanolyse (off by default: run_nanolyse=false)",
+    "medaka/deepvariant/pepper_margin_deepvariant variant calling (off by default: call_variants=false)",
+    "sniffles/cutesv structural variant calling (off by default: call_variants=false)",
+    "bambu/stringtie2/featurecounts/deseq2/dexseq quantification (protocol-gated to cDNA/directRNA; committee exclusion transcriptome)",
+    "bedtools bamtobed + ucsc bed12tobigbed (protocol-gated to cDNA/directRNA; committee exclusion transcriptome)",
+    "nanopolish/xpore/m6anet RNA modification analysis (protocol-gated to directRNA; committee exclusion plotly)",
+    "jaffal RNA fusion analysis (protocol-gated to cDNA/directRNA)",
+    "bam_rename (skip_alignment branch only)",
+    "get_test_data / get_nanolyse_fasta test-profile downloads",
+    "samtools_sort_index combined (call_variants branch only)",
+    "note: committee scope mentions Dorado demultiplex + pycoQC QC; nanoseq 3.1.0 actually uses qcat + NanoPlot/FastQC — port follows the real source"
+  ],
+  "rule_count": 19,
+  "tools": [
+    "python@3.8.3",
+    "qcat@1.1.0",
+    "nanoplot@1.41.0",
+    "fastqc@0.11.9",
+    "samtools@1.13",
+    "samtools@1.16.1",
+    "samtools@1.15.1",
+    "perl@5.26.2",
+    "minimap2@2.17",
+    "bedtools@2.29.2",
+    "ucsc-bedgraphtobigwig@377",
+    "multiqc@1.11",
+    "multiqc@1.13"
+  ],
+  "status": "ready",
+  "repo_url": "https://github.com/oxo-flow-community/oxo-flow-nanoseq",
+  "site_page": "https://oxo-flow-community.github.io/oxo-flow-nanoseq/",
+  "upstream_license": "MIT"
+}
