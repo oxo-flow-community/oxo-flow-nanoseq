@@ -1,24 +1,101 @@
-# nf-core/nanoseq (oxo-flow port)
+# oxo-flow-nanoseq — Nanopore long-read: demultiplexing, QC and alignment
 
 [![CI](https://github.com/oxo-flow-community/oxo-flow-nanoseq/actions/workflows/ci.yml/badge.svg)](https://github.com/oxo-flow-community/oxo-flow-nanoseq/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-Nanopore demultiplexing (qcat), QC (NanoPlot + FastQC), minimap2 alignment,
-BAM conversion/sorting/indexing, samtools stats, BigWig coverage tracks and a
-MultiQC report — ported to oxo-flow.
+> ★ Verified · ⇄ Official port of [`nf-core/nanoseq`](https://github.com/nf-core/nanoseq) @ `3.1.0` — same tools, same versions, same commands. Part of the [oxo-flow-community catalog](https://oxo-flow-community.github.io/).
+
+Run raw nanopore long reads through a complete analysis pipeline: barcode
+demultiplexing with qcat, per-sample QC with NanoPlot and FastQC, alignment
+to a reference genome with minimap2, BAM conversion/sorting/indexing and
+alignment statistics with samtools, BigWig coverage tracks via
+bedtools genomecov + UCSC bedGraphToBigWig, and a final MultiQC report that
+aggregates everything. The default path is the DNA protocol
+(demultiplexing on, minimap2 aligner, all QC and reporting on); the
+`protocol` config key switches to the `cDNA`/`directRNA` transcriptome
+paths with the same upstream semantics.
+
+## Installation
+
+### 1. Install oxo-flow
+
+Requires **oxo-flow >= 0.11.0**. Prebuilt release binary (recommended):
+
+```bash
+curl -fL -o oxo-flow.tar.gz \
+  https://github.com/Traitome/oxo-flow/releases/download/v0.11.0/oxo-flow-v0.11.0-x86_64-unknown-linux-gnu.tar.gz
+tar xzf oxo-flow.tar.gz
+sudo mv oxo-flow /usr/local/bin/
+```
+
+Alternative via conda: `conda install -c bioconda oxo-flow-cli` (note: the
+bioconda package may lag behind releases). Other platform binaries are
+available on the [releases page](https://github.com/Traitome/oxo-flow/releases).
+
+### 2. Get this workflow
+
+```bash
+git clone https://github.com/oxo-flow-community/oxo-flow-nanoseq.git
+cd oxo-flow-nanoseq
+```
+
+### 3. Requirements
+
+- **Reference data** — you must provide, overriding the checked-in test
+  fixtures on the command line:
+  - a genome FASTA (`reference` config key, e.g. `reference=/path/genome.fa`)
+    — required for alignment, indexing and coverage tracks;
+  - a samplesheet CSV (`input` config key) listing your samples;
+  - the raw nanopore FASTQ to demultiplex (`input_path` config key; skip it
+    with `skip_demultiplexing=true` if your reads are already split);
+  - a GTF annotation (`gtf` + `gtf_base` config keys) — optional, only
+    needed for the `cDNA`/`directRNA` junction-bed path.
+- **Compute** — the largest rule (minimap2 index) requests 12 CPUs and
+  84 GB RAM; most medium rules (qcat, fastqc, alignment, sorting, coverage)
+  request 6 CPUs and 42 GB. Size your `-j`/thread budget and machine
+  accordingly.
+- **Tools** — delivered as containers with pinned images: every rule runs
+  in the upstream module's exact `quay.io/biocontainers/<tool>:<tag>`
+  image via the docker environment backend. Requires Docker (or
+  Singularity) at runtime.
+
+## Usage
+
+```bash
+# 1. install oxo-flow (see Installation)
+# 2. prepare data (default config expects):
+#      test/fixtures/samplesheet.csv   (--input samplesheet)
+#      test/fixtures/raw/sample.fastq.gz (--input_path raw demultiplexing input)
+#      test/fixtures/refs/genome.fa    (reference fasta)
+# 3. preview the plan
+oxo-flow dry-run main.oxoflow
+# 4. run
+oxo-flow run main.oxoflow -j 8
+# 5. run a subset
+oxo-flow run main.oxoflow -t multiqc --samples first:2
+```
+
+Configuration overrides mirror the upstream CLI flags, e.g.
+`oxo-flow run main.oxoflow protocol=cDNA skip_bigwig=true` (any `[config]`
+key can be set on the command line). Outputs are written under
+`results/` (configurable via `out_dir`): `results/qcat/`,
+`results/nanoplot/`, `results/fastqc/`, `results/minimap2/`,
+`results/multiqc/minimap2/` and `results/pipeline_info/`.
+
+## Source
+
+Ported from **[nf-core/nanoseq](https://github.com/nf-core/nanoseq)**, version
+`3.1.0` (commit `6e563e54362cddb8e48d15c156251708c22d0e8d`, MIT license).
+Created 2026-08-15; this workflow may lag behind upstream releases. Upstream
+attribution, the MIT license notice and the list of files copied verbatim
+from upstream are in [NOTICE.md](NOTICE.md); the upstream MIT license is
+retained verbatim in [LICENSE.upstream](LICENSE.upstream).
 
 > Note: the committee scope summary for this port mentions "Dorado
 > demultiplex" and "pycoQC"; **nf-core/nanoseq 3.1.0 actually uses qcat for
 > demultiplexing and NanoPlot + FastQC for QC** (pycoQC was removed in
 > nanoseq 2.x, Dorado was not yet added in 3.1.0). This port follows the
 > real 3.1.0 source.
-
-## Source
-
-Ported from **[nf-core/nanoseq](https://github.com/nf-core/nanoseq)**, version
-`3.1.0` (commit `6e563e54362cddb8e48d15c156251708c22d0e8d`, MIT license).
-This port is maintained independently and **may lag the upstream** — check
-the commit above and the fidelity table below for the exact ported state.
 
 ## Fidelity
 
@@ -77,50 +154,18 @@ Not ported (all off by default upstream, so absent from the default path):
 | SAMTOOLS_SORT_INDEX (combined sort+index) | `call_variants` branch only |
 | `-profile test*` configs, cluster/container profiles, Tower reporting, completion email | nf-core infrastructure, out of port scope |
 
-## Quickstart
+## Test
 
 ```bash
-# 1. install oxo-flow (see Requirements)
-# 2. prepare data (default config expects):
-#      test/fixtures/samplesheet.csv   (--input samplesheet)
-#      test/fixtures/raw/sample.fastq.gz (--input_path raw demultiplexing input)
-#      test/fixtures/refs/genome.fa    (reference fasta)
-# 3. preview the plan
-oxo-flow dry-run main.oxoflow
-# 4. run
-oxo-flow run main.oxoflow -j 8
-# 5. run a subset
-oxo-flow run main.oxoflow -t multiqc --samples first:2
+bash test/run.sh
 ```
 
-Configuration overrides mirror the upstream CLI flags, e.g.
-`oxo-flow run main.oxoflow protocol=cDNA skip_bigwig=true` (any `[config]`
-key can be set on the command line).
-
-## Requirements
-
-- **oxo-flow ≥ 0.11.0** — install the prebuilt binary:
-
-```bash
-curl -fL -o oxo-flow.tar.gz \
-  https://github.com/Traitome/oxo-flow/releases/download/v0.11.0/oxo-flow-v0.11.0-x86_64-unknown-linux-gnu.tar.gz
-tar xzf oxo-flow.tar.gz
-sudo mv oxo-flow /usr/local/bin/
-```
-
-- Conda users may alternatively `conda install -c bioconda oxo-flow-cli`
-  (note: the bioconda package currently lags the release binary at 0.10.2 —
-  some 0.11.0 format features may not validate).
-- Docker at runtime, per the pinned container images declared in
-  `main.oxoflow` (every rule runs in the upstream module's exact
-  `quay.io/biocontainers/<tool>:<tag>` image).
+Runs `validate` + `lint` + a `dry-run` plan check (and an expanded-command
+wildcard check) against the checked-in fixtures — the same gate CI runs on
+every push.
 
 ## License
 
 Apache-2.0. Copyright (c) 2026 oxo-flow-community. Upstream attribution in
 [NOTICE.md](NOTICE.md); the upstream MIT license is retained verbatim in
 [LICENSE.upstream](LICENSE.upstream).
-
-## Community
-
-https://oxo-flow-community.github.io/

@@ -1,9 +1,9 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "oxo-flow port metadata",
   "name": "oxo-flow-nanoseq",
-  "title": "nf-core/nanoseq (oxo-flow port)",
-  "engine": "oxo-flow",
+  "title": "Nanopore long-read: demultiplexing, QC and alignment",
+  "origin": "port",
+  "rating": "verified",
+  "engine": "nextflow",
   "source": {
     "repo": "nf-core/nanoseq",
     "url": "https://github.com/nf-core/nanoseq",
@@ -14,7 +14,6 @@
   "created": "2026-08-15",
   "domain": "genomics",
   "tags": ["nanopore", "long-read", "demultiplexing", "alignment", "qcat", "minimap2", "multiqc", "nf-core"],
-  "description": "oxo-flow port of nf-core/nanoseq 3.1.0 (DNA default path): samplesheet check, qcat demultiplexing, NanoPlot + FastQC QC, minimap2 alignment, samtools view/sort/index, samtools stats/flagstat/idxstats, BigWig coverage tracks and MultiQC reporting.",
   "scope": ["samplesheet_check", "qcat", "nanoplot", "fastqc", "get_chrom_sizes", "samtools_faidx", "gtf2bed", "minimap2_index", "minimap2_align", "samtools_view", "samtools_sort", "samtools_index", "samtools_stats", "samtools_idxstats", "samtools_flagstat", "bedtools_genomecov", "ucsc_bedgraphtobigwig", "dumpsoftwareversions", "multiqc"],
   "excluded": [
     "graphmap2 index/align (aligner off by default; committee exclusion longread_map)",
@@ -31,23 +30,20 @@
     "note: committee scope mentions Dorado demultiplex + pycoQC QC; nanoseq 3.1.0 actually uses qcat + NanoPlot/FastQC — port follows the real source"
   ],
   "rule_count": 19,
-  "tools": [
-    "python@3.8.3",
-    "qcat@1.1.0",
-    "nanoplot@1.41.0",
-    "fastqc@0.11.9",
-    "samtools@1.13",
-    "samtools@1.16.1",
-    "samtools@1.15.1",
-    "perl@5.26.2",
-    "minimap2@2.17",
-    "bedtools@2.29.2",
-    "ucsc-bedgraphtobigwig@377",
-    "multiqc@1.11",
-    "multiqc@1.13"
-  ],
-  "status": "ready",
+  "tools": ["python", "qcat", "nanoplot", "fastqc", "samtools", "perl", "minimap2", "bedtools", "ucsc-bedgraphtobigwig", "multiqc"],
+  "description": "A nanopore long-read pipeline for the DNA default path: samplesheet check, qcat barcode demultiplexing, NanoPlot + FastQC QC, minimap2 alignment, samtools view/sort/index, samtools stats/flagstat/idxstats, BigWig coverage tracks and a MultiQC report. The protocol config key switches to the cDNA/directRNA transcriptome paths. Every rule runs the upstream module's exact pinned container image.",
+  "installation": {
+    "engine": "oxo-flow >= 0.11.0",
+    "toolchain": "containers (Docker/Singularity) — pinned images",
+    "requirements": [
+      "genome FASTA reference (config.reference; defaults to test fixtures — override for real data)",
+      "samplesheet CSV (config.input) plus raw nanopore FASTQ for demultiplexing (config.input_path; skip with skip_demultiplexing=true)",
+      "optional GTF annotation (config.gtf + config.gtf_base) — only needed for the cDNA/directRNA junction-bed path",
+      "compute: up to 12 CPUs / 84 GB RAM per rule (minimap2 index; most medium rules request 6 CPUs / 42 GB)",
+      "container runtime (Docker or Singularity) — every rule pins its quay.io/biocontainers image"
+    ]
+  },
   "repo_url": "https://github.com/oxo-flow-community/oxo-flow-nanoseq",
-  "site_page": "https://oxo-flow-community.github.io/oxo-flow-nanoseq/",
+  "license": "Apache-2.0",
   "upstream_license": "MIT"
 }
