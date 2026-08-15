@@ -33,7 +33,7 @@
   "tools": ["python", "qcat", "nanoplot", "fastqc", "samtools", "perl", "minimap2", "bedtools", "ucsc-bedgraphtobigwig", "multiqc"],
   "description": "A nanopore long-read pipeline for the DNA default path: samplesheet check, qcat barcode demultiplexing, NanoPlot + FastQC QC, minimap2 alignment, samtools view/sort/index, samtools stats/flagstat/idxstats, BigWig coverage tracks and a MultiQC report. The protocol config key switches to the cDNA/directRNA transcriptome paths. Every rule runs the upstream module's exact pinned container image.",
   "installation": {
-    "engine": "oxo-flow >= 0.11.0",
+    "engine": "oxo-flow >= 0.12.0",
     "toolchain": "containers (Docker/Singularity) — pinned images",
     "requirements": [
       "genome FASTA reference (config.reference; defaults to test fixtures — override for real data)",
