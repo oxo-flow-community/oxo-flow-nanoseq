@@ -136,11 +136,12 @@ when = "!config.skip_demultiplexing"
 shell = """
 ## Unzip fastq file (qcat does not support zipped files)
 FILE={config.input_path}
-if [[ $FILE == *.gz ]]
-then
+case "$FILE" in
+  *.gz)
 zcat {config.input_path} > unzipped.fastq
 FILE=unzipped.fastq
-fi
+    ;;
+esac
 ## --detect-middle only when requested (upstream: params.qcat_detect_middle)
 DETECT_MIDDLE=""
 [ "{config.qcat_detect_middle}" = "true" ] && DETECT_MIDDLE="--detect-middle true"
