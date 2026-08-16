@@ -51,7 +51,10 @@ input_path = "test/fixtures/raw/sample.fastq.gz"
 # -- Protocol (upstream: --protocol; mandatory upstream, one of DNA/cDNA/directRNA)
 protocol = "DNA"
 # -- Demultiplexing (upstream defaults)
-barcode_kit = "Auto"
+# RBK001 matches the shipped barcoded fixture (qcat Auto-detection needs
+# at least two distinct barcodes to guess the kit; the explicit kit makes
+# the test path deterministic).
+barcode_kit = "RBK001"
 qcat_min_score = 60
 qcat_detect_middle = false
 skip_demultiplexing = false
