@@ -234,14 +234,18 @@ docker = "quay.io/biocontainers/fastqc:0.11.9--0"
 # ---------------------------------------------------------------------------
 [[rules]]
 name = "get_chrom_sizes"
-input = ["{config.reference}"]
+input = [
+    "{config.reference}",
+    # samtools_faidx output — declared so the DAG orders this rule after
+    # indexing; the shell previously re-ran faidx inline, leaving the
+    # faidx rule disconnected in the workflow graph.
+    "{config.out_dir}/genome/{config.reference_name}.fai",
+]
 output = ["{config.out_dir}/genome/{config.reference_name}.sizes"]
 description = "Make a chromosome sizes file from the reference fasta"
 when = "!config.skip_alignment"
 shell = """
-ln -sf {config.reference} {config.reference_name}
-samtools faidx {config.reference_name}
-cut -f 1,2 {config.reference_name}.fai > {config.out_dir}/genome/{config.reference_name}.sizes
+cut -f 1,2 {config.out_dir}/genome/{config.reference_name}.fai > {config.out_dir}/genome/{config.reference_name}.sizes
 """
 
 [rules.resources]
@@ -352,6 +356,9 @@ name = "minimap2_align"
 input = [
     "{config.out_dir}/qcat/fastq/{sample}.fastq.gz",
     "{config.out_dir}/minimap2/{config.reference_name}.mmi",
+    # gtf2bed output, referenced by the shell's --junc-bed flag — declared
+    # so the DAG orders alignment after the BED conversion.
+    "{config.out_dir}/genome/{config.gtf_base}.bed",
 ]
 output = ["{config.out_dir}/minimap2/{sample}.sam"]
 description = "Map reads with minimap2"
