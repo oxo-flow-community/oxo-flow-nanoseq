@@ -175,23 +175,28 @@ name = "nanoplot"
 input = ["{config.out_dir}/qcat/fastq/{sample}.fastq.gz"]
 output = [
     "{config.out_dir}/nanoplot/{sample}/NanoPlot-report.html",
-    "{config.out_dir}/nanoplot/{sample}/NanoPlot-data.tsv.gz",
     "{config.out_dir}/nanoplot/{sample}/NanoPlot.log",
 ]
 description = "FastQ QC with NanoPlot"
 when = "!config.skip_qc && !config.skip_nanoplot"
 shell = """
+mkdir -p {config.out_dir}/nanoplot/{sample}
 NanoPlot \\
     -t {threads} \\
-    --fastq {input[0]}
+    --fastq {input[0]} \\
+    -o {config.out_dir}/nanoplot/{sample}
 
 ## upstream publishes *.html/*.txt/*.log per sample into results/nanoplot/
-## (fixed output names); the port isolates each sample in its own subdir
-mkdir -p {config.out_dir}/nanoplot/{sample}
-mv NanoPlot-report.html {output[0]}
-mv NanoPlot-data.tsv.gz {output[1]}
-# NanoPlot 1.41 writes a dated log (NanoPlot_<ts>.log), not NanoPlot.log
-mv NanoPlot_*.log {output[2]}
+## (fixed output names); the port isolates each sample in its own subdir.
+## The -o outdir is required: parallel rule instances share the workdir
+## CWD and NanoPlot's fixed file names would race each other there
+## (live evidence: mv 'No such file' as the sibling instance's mv moved
+## the shared files first).
+mv {config.out_dir}/nanoplot/{sample}/NanoPlot-report.html {output[0]}
+# NanoPlot 1.41 writes a dated log (NanoPlot_<ts>.log), not NanoPlot.log,
+# and no NanoPlot-data.tsv.gz for small inputs (verified in the pinned
+# container) — the data tsv is not a declared output.
+mv {config.out_dir}/nanoplot/{sample}/NanoPlot_*.log {output[1]}
 """
 
 [rules.resources]
