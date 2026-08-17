@@ -436,7 +436,10 @@ output = ["{config.out_dir}/minimap2/{sample}.sorted.bam"]
 description = "Sort BAM with samtools sort"
 when = "!config.skip_alignment"
 shell = """
-samtools sort -@ {threads} -o {config.out_dir}/minimap2/{sample}.sorted.bam -T {sample}.sorted {input[0]}
+# capped per-thread buffer + effective threads: sort's default 768MB
+# per thread over-allocates small machines (live: bam_mem allocation
+# failure in the same class as tcasia's)
+samtools sort -@ {effective_threads} -m 512M -o {config.out_dir}/minimap2/{sample}.sorted.bam -T {sample}.sorted {input[0]}
 """
 
 [rules.resources]
