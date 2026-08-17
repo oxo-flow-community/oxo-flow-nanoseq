@@ -661,7 +661,10 @@ shell = """
 OUT={config.out_dir}/multiqc/minimap2
 mkdir -p "$OUT"
 for f in {input}; do
-    ln -sf "$f" "$OUT/"
+    # absolute target: the link lives in $OUT, so a relative target
+    # would resolve against $OUT and dangle (live: MultiQC found
+    # nothing but broken links — 'No analysis results found')
+    ln -sf "$PWD/$f" "$OUT/"
 done
 cd "$OUT"
 ARGS=""
