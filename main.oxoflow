@@ -195,7 +195,10 @@ NanoPlot \\
 mv {config.out_dir}/nanoplot/{sample}/NanoPlot-report.html {output[0]}
 # NanoPlot 1.41 writes a dated log (NanoPlot_<ts>.log), not NanoPlot.log,
 # and no NanoPlot-data.tsv.gz for small inputs (verified in the pinned
-# container) — the data tsv is not a declared output.
+# container) — the data tsv is not a declared output. Clear any log left
+# by a mid-run failure first: the glob would otherwise match several
+# sources and mv fails (re-run-after-midway-failure).
+rm -f {output[1]}
 mv {config.out_dir}/nanoplot/{sample}/NanoPlot_*.log {output[1]}
 """
 
