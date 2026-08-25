@@ -58,12 +58,25 @@ barcode_kit = "RBK001"
 qcat_min_score = 60
 qcat_detect_middle = false
 skip_demultiplexing = false
-# -- Raw read cleaning (upstream default: off)
+# -- Raw read cleaning (upstream default: off). Upstream downloads the
+#    lambda genome when --nanolyse_fasta is unset (GET_NANOLYSE_FASTA,
+#    test-profile only); the port ships it as a checked-in fixture.
 run_nanolyse = false
+nanolyse_fasta = "test/fixtures/refs/lambda.fasta.gz"
 # -- Alignment
 aligner = "minimap2"
 stranded = false
 skip_alignment = false
+# -- Pre-aligned BAM input (upstream: the samplesheet input_file column
+#    carrying .bam files, used only when --skip_alignment; the port takes a
+#    comma-separated list of bam paths, one per barcode in samples_list
+#    order, linked by the bam_rename rule)
+sample_bams = ""
+# -- Suffix appended to per-sample bam names wherever rules consume reads:
+#    ".sorted.bam" (alignment branch) or ".bam" (skip_alignment branch,
+#    user bams linked by bam_rename). Mirrors the upstream channel swap
+#    between BAM_SORT_INDEX_SAMTOOLS.out.sortbam and BAM_RENAME.out.bam.
+bam_suffix = ".sorted.bam"
 # -- Reference genome (collapses the samplesheet fasta column; the default
 #    path uses a single reference for all samples, as in the upstream test data)
 reference = "test/fixtures/refs/genome.fa"
@@ -83,8 +96,30 @@ skip_multiqc = false
 #    default DNA path)
 skip_bigwig = false
 skip_bigbed = false
-# -- Variant calling (upstream default: off)
+# -- Variant calling (upstream default: off; also gated upstream on
+#    protocol == DNA). The three short-variant callers are mutually
+#    exclusive on variant_caller; structural callers on
+#    structural_variant_caller (upstream defaults: medaka / sniffles).
 call_variants = false
+variant_caller = "medaka"
+structural_variant_caller = "sniffles"
+split_mnps = false
+phase_vcf = false
+skip_vc = false
+skip_sv = false
+deepvariant_gpu = false
+# -- Quantification and differential analysis (upstream defaults: on, but
+#    gated upstream to protocol cDNA/directRNA — never on the DNA path)
+quantification_method = "bambu"
+skip_quantification = false
+skip_differential_analysis = false
+# -- RNA modification analysis (upstream default: on, gated to protocol
+#    directRNA; the fast5 dir comes from the upstream samplesheet
+#    nanopolish_fast5 column — the port takes one dir for all samples)
+skip_modification_analysis = false
+skip_xpore = false
+skip_m6anet = false
+nanopolish_fast5 = ""
 # -- MultiQC options
 multiqc_title = ""
 multiqc_config = ""
@@ -156,8 +191,12 @@ qcat \\
     --min-score {config.qcat_min_score} \\
     $DETECT_MIDDLE
 
-## Zip fastq files (gzip, as upstream)
-gzip {config.out_dir}/qcat/fastq/*
+## Zip fastq files (gzip, as upstream) — qcat 1.1.0 writes .fastq.gz
+## itself, so only still-uncompressed outputs are gzipped (idempotent).
+for f in {config.out_dir}/qcat/fastq/*.fastq; do
+  [ -e "$f" ] && gzip "$f"
+done
+true
 """
 
 [rules.resources]
@@ -326,7 +365,7 @@ input = [
 ]
 output = ["{config.out_dir}/minimap2/{config.reference_name}.mmi"]
 description = "Create a minimap2 index of the reference"
-when = "!config.skip_alignment"
+when = '!config.skip_alignment && config.aligner == "minimap2"'
 shell = """
 ## Upstream: preset = (protocol == 'DNA' || is_transcripts) ? "-ax map-ont" : "-ax splice"
 PRESET="-ax map-ont"
@@ -372,7 +411,7 @@ input = [
 ]
 output = ["{config.out_dir}/minimap2/{sample}.sam"]
 description = "Map reads with minimap2"
-when = "!config.skip_alignment"
+when = '!config.skip_alignment && config.aligner == "minimap2"'
 shell = """
 ## Same preset/kmer/stranded/junctions logic as MINIMAP2_INDEX
 PRESET="-ax map-ont"
@@ -434,7 +473,7 @@ name = "samtools_sort"
 input = ["{config.out_dir}/minimap2/{sample}.bam"]
 output = ["{config.out_dir}/minimap2/{sample}.sorted.bam"]
 description = "Sort BAM with samtools sort"
-when = "!config.skip_alignment"
+when = "!config.skip_alignment && !config.call_variants"
 shell = """
 # capped per-thread buffer + effective threads: sort's default 768MB
 # per thread over-allocates small machines (live: bam_mem allocation
@@ -458,7 +497,7 @@ name = "samtools_index"
 input = ["{config.out_dir}/minimap2/{sample}.sorted.bam"]
 output = ["{config.out_dir}/minimap2/{sample}.sorted.bam.bai"]
 description = "Index the sorted BAM with samtools index"
-when = "!config.skip_alignment"
+when = "!config.skip_alignment && !config.call_variants"
 shell = """
 samtools \\
     index \\
@@ -687,3 +726,913 @@ memory = "42G"
 
 [rules.environment]
 docker = "quay.io/biocontainers/multiqc:1.11--pyhdfd78af_0"
+
+# ---------------------------------------------------------------------------
+# 20. Raw read cleaning (upstream: NANOLYSE, label process_low)
+#     Off by default (run_nanolyse = false). Upstream re-feeds the cleaned
+#     reads into the QC/alignment channels; oxo-flow has no channel
+#     reassignment, so the port writes the cleaned reads to results/nanolyse/
+#     and the downstream chain keeps consuming the demultiplexed reads
+#     (deviation, see README).
+# ---------------------------------------------------------------------------
+[[rules]]
+name = "nanolyse"
+input = [
+    "{config.out_dir}/qcat/fastq/{sample}.fastq.gz",
+    "{config.nanolyse_fasta}",
+]
+output = [
+    "{config.out_dir}/nanolyse/{sample}.fastq.gz",
+    "{config.out_dir}/nanolyse/{sample}.nanolyse.log",
+]
+description = "Remove contaminant DNA reads with NanoLyse"
+when = "config.run_nanolyse"
+shell = """
+gunzip -c {input[0]} | NanoLyse -r {input[1]} | gzip > {config.out_dir}/nanolyse/{sample}.fastq.gz
+mv NanoLyse.log {config.out_dir}/nanolyse/{sample}.nanolyse.log
+"""
+
+[rules.resources]
+threads = 2
+memory = "12G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/nanolyse:1.2.0--py_0"
+
+# ---------------------------------------------------------------------------
+# 21-22. Graphmap2 aligner branch (upstream: GRAPHMAP2_INDEX/GRAPHMAP2_ALIGN,
+#     label process_high) — active only when aligner = "graphmap2".
+#     Deviation: the port keeps the shared results/minimap2/ namespace so the
+#     downstream view/sort/index/stats/coverage chain needs no per-aligner
+#     duplicates; upstream publishes the graphmap2 branch under
+#     results/graphmap2/.
+# ---------------------------------------------------------------------------
+[[rules]]
+name = "graphmap2_index"
+input = [
+    "{config.reference}",
+    "{config.out_dir}/genome/{config.reference_name}.sizes",
+]
+output = ["{config.out_dir}/minimap2/{config.reference_name}.gmidx"]
+description = "Create a graphmap2 index of the reference"
+when = '!config.skip_alignment && config.aligner == "graphmap2"'
+shell = """
+## Stage the reference under its basename so the index keeps the upstream
+## naming (<fasta>.gmidx); graphmap2 index mode = `align -I`
+ln -sf {config.reference} {config.reference_name}
+## preset = (protocol == 'DNA' || is_transcripts) ? "" : "-x rnaseq"
+## (the port does not model the per-sample is_transcripts column — the
+## non-DNA default, same convention as the minimap2 rules)
+PRESET="-x rnaseq"
+[ "{config.protocol}" = "DNA" ] && PRESET=""
+## junctions = (protocol != 'DNA' && !is_transcripts && gtf) ? "--gtf <gtf>" : ""
+JUNCTIONS=""
+if [ "{config.protocol}" != "DNA" ] && [ -n "{config.gtf}" ]; then JUNCTIONS="--gtf {config.gtf}"; fi
+
+graphmap2 \\
+    align \\
+    $PRESET \\
+    $JUNCTIONS \\
+    -t {threads} \\
+    -I \\
+    -r {config.reference_name}
+
+mv {config.reference_name}.gmidx {config.out_dir}/minimap2/{config.reference_name}.gmidx
+"""
+
+[rules.resources]
+threads = 12
+memory = "84G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/graphmap:0.6.3--he513fc3_0"
+
+[[rules]]
+name = "graphmap2_align"
+input = [
+    "{config.out_dir}/qcat/fastq/{sample}.fastq.gz",
+    "{config.out_dir}/minimap2/{config.reference_name}.gmidx",
+    "{config.reference}",
+]
+output = ["{config.out_dir}/minimap2/{sample}.sam"]
+description = "Map reads with graphmap2"
+when = '!config.skip_alignment && config.aligner == "graphmap2"'
+shell = """
+PRESET="-x rnaseq"
+[ "{config.protocol}" = "DNA" ] && PRESET=""
+JUNCTIONS=""
+if [ "{config.protocol}" != "DNA" ] && [ -n "{config.gtf}" ]; then JUNCTIONS="--gtf {config.gtf}"; fi
+
+graphmap2 \\
+    align \\
+    $PRESET \\
+    $JUNCTIONS \\
+    -t {threads} \\
+    -r {config.reference} \\
+    -i {config.out_dir}/minimap2/{config.reference_name}.gmidx \\
+    -d {input[0]} \\
+    -o {config.out_dir}/minimap2/{sample}.sam \\
+    --extcigar
+"""
+
+[rules.resources]
+threads = 12
+memory = "84G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/graphmap:0.6.3--he513fc3_0"
+
+# ---------------------------------------------------------------------------
+# 23. Combined sort + index (upstream: SAMTOOLS_SORT_INDEX, label
+#     process_low) — active only in the variant-calling branch: upstream runs
+#     the combined sort+index instead of the separate SAMTOOLS_SORT +
+#     SAMTOOLS_INDEX when call_variants = true (those rules are then skipped).
+#     Same capped-buffer sort deviation as samtools_sort (live evidence).
+# ---------------------------------------------------------------------------
+[[rules]]
+name = "samtools_sort_index"
+input = ["{config.out_dir}/minimap2/{sample}.bam"]
+output = [
+    "{config.out_dir}/minimap2/{sample}.sorted.bam",
+    "{config.out_dir}/minimap2/{sample}.sorted.bam.bai",
+]
+description = "Sort and index BAM in one step (variant-calling branch)"
+when = "!config.skip_alignment && config.call_variants"
+shell = """
+samtools sort -@ {effective_threads} -m 512M -o {config.out_dir}/minimap2/{sample}.sorted.bam -T {sample}.sorted {input[0]}
+samtools index {config.out_dir}/minimap2/{sample}.sorted.bam
+"""
+
+[rules.resources]
+threads = 2
+memory = "12G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/samtools:1.16.1--h6899075_1"
+
+# ---------------------------------------------------------------------------
+# 24. BAM rename (upstream: BAM_RENAME, label process_medium)
+#     Runs only with skip_alignment = true and pre-aligned per-barcode bams
+#     (upstream: the samplesheet input_file column carrying .bam files; the
+#     port takes sample_bams, a comma-separated list in samples_list order).
+#     Links each user bam under the port barcode name, exactly like the
+#     upstream `[ ! -f ] && ln -s` preamble.
+# ---------------------------------------------------------------------------
+[[rules]]
+name = "bam_rename"
+# expand_inputs over the comma-separated config list splits it into one
+# concrete path per bam (resolve_config_list semantics) and injects them
+# into rule.input, so `{input}` is space-joined in samples_list order.
+input = []
+expand_inputs = [
+    { pattern = "{bam}", variables = { bam = "config.sample_bams" } },
+]
+output = [
+    "{config.out_dir}/minimap2/barcode01.bam",
+    "{config.out_dir}/minimap2/barcode02.bam",
+]
+description = "Link user-provided BAMs under the port barcode names"
+when = 'config.skip_alignment && config.sample_bams != ""'
+shell = """
+IFS=' ' read -ra BAMS <<< "{input}"
+[ ! -f {config.out_dir}/minimap2/barcode01.bam ] && ln -s "${BAMS[0]}" {config.out_dir}/minimap2/barcode01.bam
+[ ! -f {config.out_dir}/minimap2/barcode02.bam ] && ln -s "${BAMS[1]}" {config.out_dir}/minimap2/barcode02.bam
+"""
+
+[rules.resources]
+threads = 6
+memory = "42G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/sed:4.7.0"
+
+# ---------------------------------------------------------------------------
+# 25-26. BigBed tracks (upstream: BEDTOOLS_BAMBED + UCSC_BED12TOBIGBED, label
+#     process_medium). The upstream module `when` gates both to protocol
+#     directRNA/cDNA — off on the default DNA path, exactly like the port's
+#     bigwig twin rules.
+# ---------------------------------------------------------------------------
+[[rules]]
+name = "bedtools_bamtobed"
+input = [
+    "{config.out_dir}/minimap2/{sample}.sorted.bam",
+    "{config.out_dir}/minimap2/{sample}.sorted.bam.bai",
+]
+output = ["{config.out_dir}/minimap2/bigbed/{sample}.bed12"]
+description = "Convert BAM to BED12 with bedtools bamtobed"
+when = '!config.skip_alignment && !config.skip_bigbed && (config.protocol == "directRNA" || config.protocol == "cDNA")'
+shell = """
+bedtools \\
+    bamtobed \\
+    -bed12 \\
+    -cigar \\
+    -i {input[0]} \\
+    | bedtools sort > {config.out_dir}/minimap2/bigbed/{sample}.bed12
+"""
+
+[rules.resources]
+threads = 6
+memory = "42G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/bedtools:2.29.2--hc088bd4_0"
+
+[[rules]]
+name = "ucsc_bed12tobigbed"
+input = [
+    "{config.out_dir}/minimap2/bigbed/{sample}.bed12",
+    "{config.out_dir}/genome/{config.reference_name}.sizes",
+]
+output = ["{config.out_dir}/minimap2/bigbed/{sample}.bigBed"]
+description = "Convert BED12 to BigBED with bedToBigBed"
+when = '!config.skip_alignment && !config.skip_bigbed && (config.protocol == "directRNA" || config.protocol == "cDNA")'
+shell = """
+bedToBigBed {input[0]} {input[1]} {config.out_dir}/minimap2/bigbed/{sample}.bigBed
+"""
+
+[rules.resources]
+threads = 6
+memory = "42G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/ucsc-bedtobigbed:377--h446ed27_1"
+
+# ---------------------------------------------------------------------------
+# 27-33. Short variant calling (upstream: SHORT_VARIANT_CALLING, gated on
+#     call_variants && protocol == 'DNA'). The three callers are mutually
+#     exclusive on config.variant_caller (upstream default medaka); outputs
+#     are bgzip'd/tabix'd like upstream and published under
+#     results/variant_calling/<caller>/.
+# ---------------------------------------------------------------------------
+[[rules]]
+name = "medaka_variant"
+input = [
+    "{config.out_dir}/minimap2/{sample}.sorted.bam",
+    "{config.out_dir}/minimap2/{sample}.sorted.bam.bai",
+    "{config.reference}",
+]
+output = ["{config.out_dir}/variant_calling/medaka_variant/{sample}/round_1.vcf"]
+description = "Call short variants with medaka"
+when = 'config.call_variants && config.protocol == "DNA" && !config.skip_vc && config.variant_caller == "medaka"'
+shell = """
+## split_mnps = params.split_mnps ? "-l" : "" (upstream)
+SPLIT_MNPS=""
+[ "{config.split_mnps}" = "true" ] && SPLIT_MNPS="-l"
+## phase_vcf = params.phase_vcf ? "-p" : "" (upstream)
+PHASE_VCF=""
+[ "{config.phase_vcf}" = "true" ] && PHASE_VCF="-p"
+
+medaka_variant \\
+    -d \\
+    -f {config.reference} \\
+    -i {input[0]} \\
+    -o {config.out_dir}/variant_calling/medaka_variant/{sample} \\
+    -t {threads} \\
+    $SPLIT_MNPS \\
+    $PHASE_VCF
+
+## medaka 1.4.4 writes round_0_hap_mixed_unphased.vcf (+ .hdf); the
+## declared output keeps the upstream round_1.vcf contract.
+mv {config.out_dir}/variant_calling/medaka_variant/{sample}/round_0_hap_mixed_unphased.vcf \\
+   {config.out_dir}/variant_calling/medaka_variant/{sample}/round_1.vcf
+"""
+
+[rules.resources]
+threads = 12
+memory = "84G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/medaka:1.4.4--py38h130def0_0"
+
+[[rules]]
+name = "medaka_bgzip_vcf"
+input = ["{config.out_dir}/variant_calling/medaka_variant/{sample}/round_1.vcf"]
+output = ["{config.out_dir}/variant_calling/medaka_variant/{sample}.vcf.gz"]
+description = "Bgzip the medaka VCF (upstream: TABIX_BGZIP as MEDAKA_BGZIP_VCF)"
+when = 'config.call_variants && config.protocol == "DNA" && !config.skip_vc && config.variant_caller == "medaka"'
+shell = """
+bgzip -c -@ {threads} {input[0]} > {config.out_dir}/variant_calling/medaka_variant/{sample}.vcf.gz
+"""
+
+[rules.resources]
+threads = 1
+memory = "6G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/tabix:1.11--hdfd78af_0"
+
+[[rules]]
+name = "medaka_tabix_vcf"
+input = ["{config.out_dir}/variant_calling/medaka_variant/{sample}.vcf.gz"]
+output = ["{config.out_dir}/variant_calling/medaka_variant/{sample}.vcf.gz.tbi"]
+description = "Tabix-index the medaka VCF (upstream: TABIX_TABIX as MEDAKA_TABIX_VCF)"
+when = 'config.call_variants && config.protocol == "DNA" && !config.skip_vc && config.variant_caller == "medaka"'
+shell = """
+tabix {input[0]}
+"""
+
+[rules.resources]
+threads = 1
+memory = "6G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/tabix:1.11--hdfd78af_0"
+
+[[rules]]
+name = "deepvariant"
+input = [
+    "{config.out_dir}/minimap2/{sample}.sorted.bam",
+    "{config.out_dir}/minimap2/{sample}.sorted.bam.bai",
+    "{config.reference}",
+    "{config.out_dir}/genome/{config.reference_name}.fai",
+]
+output = [
+    "{config.out_dir}/variant_calling/deepvariant/{sample}.vcf.gz",
+    "{config.out_dir}/variant_calling/deepvariant/{sample}.g.vcf.gz",
+]
+description = "Call short variants with DeepVariant (docker-only upstream)"
+when = 'config.call_variants && config.protocol == "DNA" && !config.skip_vc && config.variant_caller == "deepvariant"'
+shell = """
+## ext.args = "--model_type WGS" (upstream modules.config)
+/opt/deepvariant/bin/run_deepvariant \\
+    --ref={config.reference} \\
+    --reads={input[0]} \\
+    --output_vcf={config.out_dir}/variant_calling/deepvariant/{sample}.vcf.gz \\
+    --output_gvcf={config.out_dir}/variant_calling/deepvariant/{sample}.g.vcf.gz \\
+    --model_type WGS \\
+    --num_shards={threads}
+"""
+
+[rules.resources]
+threads = 6
+memory = "42G"
+
+[rules.environment]
+docker = "google/deepvariant:1.4.0"
+
+[[rules]]
+name = "deepvariant_tabix_vcf"
+input = ["{config.out_dir}/variant_calling/deepvariant/{sample}.vcf.gz"]
+output = ["{config.out_dir}/variant_calling/deepvariant/{sample}.vcf.gz.tbi"]
+description = "Tabix-index the DeepVariant VCF (upstream: DEEPVARIANT_TABIX_VCF)"
+when = 'config.call_variants && config.protocol == "DNA" && !config.skip_vc && config.variant_caller == "deepvariant"'
+shell = """
+tabix {input[0]}
+"""
+
+[rules.resources]
+threads = 1
+memory = "6G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/tabix:1.11--hdfd78af_0"
+
+[[rules]]
+name = "deepvariant_tabix_gvcf"
+input = ["{config.out_dir}/variant_calling/deepvariant/{sample}.g.vcf.gz"]
+output = ["{config.out_dir}/variant_calling/deepvariant/{sample}.g.vcf.gz.tbi"]
+description = "Tabix-index the DeepVariant gVCF (upstream: DEEPVARIANT_TABIX_GVCF)"
+when = 'config.call_variants && config.protocol == "DNA" && !config.skip_vc && config.variant_caller == "deepvariant"'
+shell = """
+tabix {input[0]}
+"""
+
+[rules.resources]
+threads = 1
+memory = "6G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/tabix:1.11--hdfd78af_0"
+
+[[rules]]
+name = "pepper_margin_deepvariant"
+input = [
+    "{config.out_dir}/minimap2/{sample}.sorted.bam",
+    "{config.out_dir}/minimap2/{sample}.sorted.bam.bai",
+    "{config.reference}",
+    "{config.out_dir}/genome/{config.reference_name}.fai",
+]
+output = [
+    "{config.out_dir}/variant_calling/margin_pepper_deepvariant/{sample}.vcf.gz",
+    "{config.out_dir}/variant_calling/margin_pepper_deepvariant/{sample}.vcf.gz.tbi",
+]
+description = "Call short variants with PEPPER-Margin-DeepVariant"
+when = 'config.call_variants && config.protocol == "DNA" && !config.skip_vc && config.variant_caller == "pepper_margin_deepvariant"'
+shell = """
+## gpu = params.deepvariant_gpu ? "-g" : "" (upstream); the CPU container is
+## pinned here — set deepvariant_gpu = true only after swapping the image to
+## docker.io/kishwars/pepper_deepvariant:r0.8-gpu
+GPU=""
+[ "{config.deepvariant_gpu}" = "true" ] && GPU="-g"
+## ext.args = "--ont_r9_guppy5_sup" (upstream modules.config)
+run_pepper_margin_deepvariant call_variant \\
+    -b "{input[0]}" \\
+    -f "{config.reference}" \\
+    -o "{config.out_dir}/variant_calling/margin_pepper_deepvariant" \\
+    -p "{sample}" \\
+    -t {threads} \\
+    $GPU \\
+    --ont_r9_guppy5_sup
+"""
+
+[rules.resources]
+threads = 12
+memory = "84G"
+
+[rules.environment]
+docker = "docker.io/kishwars/pepper_deepvariant:r0.8"
+
+# ---------------------------------------------------------------------------
+# 34-39. Structural variant calling (upstream: STRUCTURAL_VARIANT_CALLING,
+#     gated on call_variants && protocol == 'DNA', mutually exclusive on
+#     config.structural_variant_caller: sniffles (default) / cutesv). The raw
+#     caller VCFs are sorted with bcftools sort (bgzipped output) and
+#     tabix-indexed, published under results/variant_calling/<caller>/.
+# ---------------------------------------------------------------------------
+[[rules]]
+name = "sniffles"
+input = [
+    "{config.out_dir}/minimap2/{sample}.sorted.bam",
+    "{config.out_dir}/minimap2/{sample}.sorted.bam.bai",
+]
+output = ["{config.out_dir}/variant_calling/sniffles/{sample}_sniffles.vcf"]
+description = "Call structural variants with Sniffles"
+when = 'config.call_variants && config.protocol == "DNA" && !config.skip_sv && config.structural_variant_caller == "sniffles"'
+shell = """
+sniffles \\
+    -m {input[0]} \\
+    -v {config.out_dir}/variant_calling/sniffles/{sample}_sniffles.vcf \\
+    -t {threads}
+"""
+
+[rules.resources]
+threads = 12
+memory = "84G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/sniffles:1.0.12--h8b12597_1"
+
+[[rules]]
+name = "sniffles_sort_vcf"
+input = ["{config.out_dir}/variant_calling/sniffles/{sample}_sniffles.vcf"]
+output = ["{config.out_dir}/variant_calling/sniffles/{sample}.vcf.gz"]
+description = "Sort the Sniffles VCF with bcftools sort (upstream: BCFTOOLS_SORT as SNIFFLES_SORT_VCF)"
+when = 'config.call_variants && config.protocol == "DNA" && !config.skip_sv && config.structural_variant_caller == "sniffles"'
+shell = """
+bcftools \\
+    sort \\
+    --output {config.out_dir}/variant_calling/sniffles/{sample}.vcf.gz \\
+    {input[0]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "42G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/bcftools:1.16--hfe4b78e_1"
+
+[[rules]]
+name = "sniffles_tabix_vcf"
+input = ["{config.out_dir}/variant_calling/sniffles/{sample}.vcf.gz"]
+output = ["{config.out_dir}/variant_calling/sniffles/{sample}.vcf.gz.tbi"]
+description = "Tabix-index the Sniffles VCF (upstream: SNIFFLES_TABIX_VCF)"
+when = 'config.call_variants && config.protocol == "DNA" && !config.skip_sv && config.structural_variant_caller == "sniffles"'
+shell = """
+tabix {input[0]}
+"""
+
+[rules.resources]
+threads = 1
+memory = "6G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/tabix:1.11--hdfd78af_0"
+
+[[rules]]
+name = "cutesv"
+input = [
+    "{config.out_dir}/minimap2/{sample}.sorted.bam",
+    "{config.out_dir}/minimap2/{sample}.sorted.bam.bai",
+    "{config.reference}",
+]
+output = ["{config.out_dir}/variant_calling/cutesv/{sample}_cuteSV.vcf"]
+description = "Call structural variants with cuteSV"
+when = 'config.call_variants && config.protocol == "DNA" && !config.skip_sv && config.structural_variant_caller == "cutesv"'
+shell = """
+cuteSV \\
+    {input[0]} \\
+    {config.reference} \\
+    {config.out_dir}/variant_calling/cutesv/{sample}_cuteSV.vcf \\
+    . \\
+    --threads {threads} \\
+    --sample {sample} \\
+    --genotype
+"""
+
+[rules.resources]
+threads = 12
+memory = "84G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/cutesv:1.0.12--pyhdfd78af_0"
+
+[[rules]]
+name = "cutesv_sort_vcf"
+input = ["{config.out_dir}/variant_calling/cutesv/{sample}_cuteSV.vcf"]
+output = ["{config.out_dir}/variant_calling/cutesv/{sample}.vcf.gz"]
+description = "Sort the cuteSV VCF with bcftools sort (upstream: BCFTOOLS_SORT as CUTESV_SORT_VCF)"
+when = 'config.call_variants && config.protocol == "DNA" && !config.skip_sv && config.structural_variant_caller == "cutesv"'
+shell = """
+bcftools \\
+    sort \\
+    --output {config.out_dir}/variant_calling/cutesv/{sample}.vcf.gz \\
+    {input[0]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "42G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/bcftools:1.16--hfe4b78e_1"
+
+[[rules]]
+name = "cutesv_tabix_vcf"
+input = ["{config.out_dir}/variant_calling/cutesv/{sample}.vcf.gz"]
+output = ["{config.out_dir}/variant_calling/cutesv/{sample}.vcf.gz.tbi"]
+description = "Tabix-index the cuteSV VCF (upstream: CUTESV_TABIX_VCF)"
+when = 'config.call_variants && config.protocol == "DNA" && !config.skip_sv && config.structural_variant_caller == "cutesv"'
+shell = """
+tabix {input[0]}
+"""
+
+[rules.resources]
+threads = 1
+memory = "6G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/tabix:1.11--hdfd78af_0"
+
+# ---------------------------------------------------------------------------
+# 40-47. Quantification and differential analysis (upstream: gated on
+#     protocol cDNA/directRNA — off on the default DNA path). Two mutually
+#     exclusive methods on config.quantification_method: bambu (default,
+#     single gather rule) or stringtie2 (per-sample stringtie2 + merge +
+#     featureCounts). Both methods write counts_gene.txt/counts_transcript.
+#     txt; DESEQ2/DEXSEQ consume whichever method produced them and publish
+#     under results/bambu/deseq2|dexseq exactly like upstream (even for the
+#     stringtie2 method — an upstream publishDir quirk kept verbatim; the
+#     two same-output rule pairs are mutually exclusive via the
+#     quantification_method gate).
+# ---------------------------------------------------------------------------
+[[rules]]
+name = "bambu"
+input = [
+    "{config.reference}",
+    "{config.gtf}",
+]
+expand_inputs = [
+    { pattern = "{config.out_dir}/minimap2/{sample}{config.bam_suffix}", variables = { sample = "config.samples_list" } },
+]
+output = [
+    "{config.out_dir}/bambu/counts_gene.txt",
+    "{config.out_dir}/bambu/counts_transcript.txt",
+    "{config.out_dir}/bambu/extended_annotations.gtf",
+]
+description = "Quantify transcripts with bambu"
+when = 'config.protocol != "DNA" && !config.skip_quantification && config.quantification_method == "bambu"'
+shell = """
+IFS=' ' read -ra IN <<< "{input}"
+Rscript scripts/run_bambu.r \\
+    --tag=. \\
+    --ncore={threads} \\
+    --annotation={input[1]} \\
+    --fasta={input[0]} \\
+    "${IN[@]:2}"
+mv counts_gene.txt counts_transcript.txt extended_annotations.gtf {config.out_dir}/bambu/
+"""
+
+[rules.resources]
+threads = 6
+memory = "42G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/bioconductor-bambu:3.0.8--r42hc247a5b_0"
+
+[[rules]]
+name = "stringtie2"
+input = [
+    "{config.out_dir}/minimap2/{sample}{config.bam_suffix}",
+    "{config.reference}",
+    "{config.gtf}",
+]
+output = ["{config.out_dir}/stringtie2/{sample}.stringtie.gtf"]
+description = "Assemble transcripts with StringTie2"
+when = 'config.protocol != "DNA" && !config.skip_quantification && config.quantification_method == "stringtie2"'
+shell = """
+stringtie \\
+    -L \\
+    -G {config.gtf} \\
+    -o {config.out_dir}/stringtie2/{sample}.stringtie.gtf \\
+    {input[0]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "42G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/stringtie:2.1.4--h7e0af3c_0"
+
+[[rules]]
+name = "stringtie_merge"
+input = []
+expand_inputs = [
+    { pattern = "{config.out_dir}/stringtie2/{sample}.stringtie.gtf", variables = { sample = "config.samples_list" } },
+]
+output = ["{config.out_dir}/stringtie2/stringtie.merged.gtf"]
+description = "Merge StringTie2 assemblies (upstream: STRINGTIE_MERGE)"
+when = 'config.protocol != "DNA" && !config.skip_quantification && config.quantification_method == "stringtie2"'
+shell = """
+IFS=' ' read -ra IN <<< "{input}"
+## reference = annotation_gtf ? "-G <gtf>" : "" (upstream)
+REFERENCE=""
+[ -n "{config.gtf}" ] && REFERENCE="-G {config.gtf}"
+stringtie \\
+    --merge "${IN[@]}" \\
+    $REFERENCE \\
+    -o {config.out_dir}/stringtie2/stringtie.merged.gtf
+"""
+
+[rules.resources]
+threads = 6
+memory = "42G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/stringtie:2.2.1--hecb563c_2"
+
+[[rules]]
+name = "subread_featurecounts"
+input = ["{config.out_dir}/stringtie2/stringtie.merged.gtf"]
+expand_inputs = [
+    { pattern = "{config.out_dir}/minimap2/{sample}{config.bam_suffix}", variables = { sample = "config.samples_list" } },
+]
+output = [
+    "{config.out_dir}/stringtie2/featureCounts/counts_gene.txt",
+    "{config.out_dir}/stringtie2/featureCounts/counts_transcript.txt",
+    "{config.out_dir}/stringtie2/featureCounts/counts_gene.txt.summary",
+    "{config.out_dir}/stringtie2/featureCounts/counts_transcript.txt.summary",
+]
+description = "Quantify genes and transcripts with featureCounts"
+when = 'config.protocol != "DNA" && !config.skip_quantification && config.quantification_method == "stringtie2"'
+shell = """
+IFS=' ' read -ra IN <<< "{input}"
+featureCounts \\
+    -L \\
+    -O \\
+    -f \\
+    -g gene_id \\
+    -t exon \\
+    -T {threads} \\
+    -a ${IN[0]} \\
+    -o {config.out_dir}/stringtie2/featureCounts/counts_gene.txt \\
+    "${IN[@]:1}"
+
+featureCounts \\
+    -L \\
+    -O \\
+    -f \\
+    --primary \\
+    --fraction \\
+    -F GTF \\
+    -g transcript_id \\
+    -t transcript \\
+    --extraAttributes gene_id \\
+    -T {threads} \\
+    -a ${IN[0]} \\
+    -o {config.out_dir}/stringtie2/featureCounts/counts_transcript.txt \\
+    "${IN[@]:1}"
+"""
+
+[rules.resources]
+threads = 6
+memory = "42G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/subread:2.0.1--hed695b0_0"
+
+[[rules]]
+name = "deseq2"
+input = ["{config.out_dir}/bambu/counts_gene.txt"]
+output = ["{config.out_dir}/bambu/deseq2/deseq2.results.txt"]
+description = "Differential gene expression with DESeq2 (bambu counts)"
+when = 'config.protocol != "DNA" && !config.skip_quantification && !config.skip_differential_analysis && config.quantification_method == "bambu"'
+shell = """
+Rscript scripts/run_deseq2.r bambu {input[0]}
+mv deseq2.results.txt {config.out_dir}/bambu/deseq2/deseq2.results.txt
+"""
+
+[rules.resources]
+threads = 6
+memory = "42G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/mulled-v2-8849acf39a43cdd6c839a369a74c0adc823e2f91:ab110436faf952a33575c64dd74615a84011450b-0"
+
+[[rules]]
+name = "deseq2_featurecounts"
+input = ["{config.out_dir}/stringtie2/featureCounts/counts_gene.txt"]
+output = ["{config.out_dir}/bambu/deseq2/deseq2.results.txt"]
+description = "Differential gene expression with DESeq2 (featureCounts counts)"
+when = 'config.protocol != "DNA" && !config.skip_quantification && !config.skip_differential_analysis && config.quantification_method == "stringtie2"'
+shell = """
+Rscript scripts/run_deseq2.r stringtie2 {input[0]}
+mv deseq2.results.txt {config.out_dir}/bambu/deseq2/deseq2.results.txt
+"""
+
+[rules.resources]
+threads = 6
+memory = "42G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/mulled-v2-8849acf39a43cdd6c839a369a74c0adc823e2f91:ab110436faf952a33575c64dd74615a84011450b-0"
+
+[[rules]]
+name = "dexseq"
+input = ["{config.out_dir}/bambu/counts_transcript.txt"]
+output = ["{config.out_dir}/bambu/dexseq/dexseq.results.txt"]
+description = "Differential transcript usage with DEXSeq (bambu counts)"
+when = 'config.protocol != "DNA" && !config.skip_quantification && !config.skip_differential_analysis && config.quantification_method == "bambu"'
+shell = """
+Rscript scripts/run_dexseq.r bambu {input[0]}
+mv dexseq.results.txt {config.out_dir}/bambu/dexseq/dexseq.results.txt
+"""
+
+[rules.resources]
+threads = 6
+memory = "42G"
+
+[rules.environment]
+docker = "docker.io/yuukiiwa/nanoseq:dexseq"
+
+[[rules]]
+name = "dexseq_featurecounts"
+input = ["{config.out_dir}/stringtie2/featureCounts/counts_transcript.txt"]
+output = ["{config.out_dir}/bambu/dexseq/dexseq.results.txt"]
+description = "Differential transcript usage with DEXSeq (featureCounts counts)"
+when = 'config.protocol != "DNA" && !config.skip_quantification && !config.skip_differential_analysis && config.quantification_method == "stringtie2"'
+shell = """
+Rscript scripts/run_dexseq.r stringtie2 {input[0]}
+mv dexseq.results.txt {config.out_dir}/bambu/dexseq/dexseq.results.txt
+"""
+
+[rules.resources]
+threads = 6
+memory = "42G"
+
+[rules.environment]
+docker = "docker.io/yuukiiwa/nanoseq:dexseq"
+
+# ---------------------------------------------------------------------------
+# 48-52. RNA modification analysis (upstream: RNA_MODIFICATION_XPORE_M6ANET,
+#     gated on protocol directRNA — off on the default DNA path). Nanopolish
+#     event-aligns the raw signal against the reference; xPore (skip_xpore)
+#     and m6anet (skip_m6anet) each run dataprep + analysis on the
+#     eventalign output. Upstream takes per-sample fast5 dirs from the
+#     samplesheet nanopolish_fast5 column; the port takes one dir for all
+#     samples (config.nanopolish_fast5) and gates the branch off when unset.
+# ---------------------------------------------------------------------------
+[[rules]]
+name = "nanopolish_index_eventalign"
+input = [
+    "{config.out_dir}/qcat/fastq/{sample}.fastq.gz",
+    "{config.out_dir}/minimap2/{sample}{config.bam_suffix}",
+    "{config.out_dir}/minimap2/{sample}{config.bam_suffix}.bai",
+    "{config.reference}",
+]
+output = [
+    "{config.out_dir}/rna_modifications/nanopolish/{sample}_summary.txt",
+    "{config.out_dir}/rna_modifications/nanopolish/{sample}_eventalign.txt",
+]
+description = "Event-align nanopore reads to the reference with Nanopolish"
+when = 'config.protocol == "directRNA" && !config.skip_modification_analysis && config.nanopolish_fast5 != ""'
+shell = """
+nanopolish index -d {config.nanopolish_fast5} {input[0]}
+nanopolish eventalign \\
+    --reads {input[0]} \\
+    --bam {input[1]} \\
+    --genome {config.reference} \\
+    --scale-events \\
+    --signal-index \\
+    --summary {config.out_dir}/rna_modifications/nanopolish/{sample}_summary.txt \\
+    --threads {threads} \\
+    > {config.out_dir}/rna_modifications/nanopolish/{sample}_eventalign.txt
+"""
+
+[rules.resources]
+threads = 6
+memory = "42G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/nanopolish:0.13.2--he3b7ca5_2"
+
+[[rules]]
+name = "xpore_dataprep"
+input = [
+    "{config.out_dir}/rna_modifications/nanopolish/{sample}_eventalign.txt",
+    "{config.reference}",
+    "{config.gtf}",
+]
+output = ["{config.out_dir}/rna_modifications/xpore/dataprep/{sample}"]
+description = "Prepare eventalign data for xPore"
+when = 'config.protocol == "directRNA" && !config.skip_modification_analysis && !config.skip_xpore && config.nanopolish_fast5 != ""'
+shell = """
+xpore dataprep \\
+    --eventalign {input[0]} \\
+    --out_dir {config.out_dir}/rna_modifications/xpore/dataprep/{sample} \\
+    --n_processes {threads} \\
+    --genome --gtf_or_gff {input[2]} --transcript_fasta {input[1]}
+"""
+
+[rules.resources]
+threads = 6
+memory = "42G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/xpore:2.1--pyh5e36f6f_0"
+
+[[rules]]
+name = "xpore_diffmod"
+input = []
+expand_inputs = [
+    { pattern = "{config.out_dir}/rna_modifications/xpore/dataprep/{sample}", variables = { sample = "config.samples_list" } },
+]
+output = ["{config.out_dir}/rna_modifications/xpore/diffmod/diffmod_outputs"]
+description = "Differential modification analysis with xPore"
+when = 'config.protocol == "directRNA" && !config.skip_modification_analysis && !config.skip_xpore && config.nanopolish_fast5 != ""'
+depends_on = ["xpore_dataprep"]
+shell = """
+IFS=' ' read -ra DIRS <<< "{input}"
+ARGS=""
+for d in "${DIRS[@]}"; do
+    ARGS="$ARGS $d,$(basename "$d")"
+done
+## upstream: `xpore diffmod --config $workflow.workDir/*/*/diffmod_config.yml`;
+## the port runs create_yml.py and xpore diffmod in the same workdir, so the
+## config path is the local file (the upstream glob is a workdir workaround)
+python3 scripts/create_yml.py diffmod_config.yml $ARGS
+xpore diffmod --config diffmod_config.yml --n_processes {threads}
+mv diffmod_outputs {config.out_dir}/rna_modifications/xpore/diffmod/
+"""
+
+[rules.resources]
+threads = 6
+memory = "42G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/xpore:2.1--pyh5e36f6f_0"
+
+[[rules]]
+name = "m6anet_dataprep"
+input = ["{config.out_dir}/rna_modifications/nanopolish/{sample}_eventalign.txt"]
+output = ["{config.out_dir}/rna_modifications/m6anet/dataprep/{sample}"]
+description = "Prepare eventalign data for m6anet"
+when = 'config.protocol == "directRNA" && !config.skip_modification_analysis && !config.skip_m6anet && config.nanopolish_fast5 != ""'
+shell = """
+m6anet-dataprep \\
+    --eventalign {input[0]} \\
+    --out_dir {config.out_dir}/rna_modifications/m6anet/dataprep/{sample} \\
+    --n_processes {threads}
+"""
+
+[rules.resources]
+threads = 6
+memory = "42G"
+
+[rules.environment]
+docker = "docker.io/yuukiiwa/m6anet:1.0"
+
+[[rules]]
+name = "m6anet_inference"
+input = ["{config.out_dir}/rna_modifications/m6anet/dataprep/{sample}"]
+output = ["{config.out_dir}/rna_modifications/m6anet/inference/{sample}_results"]
+description = "Detect m6A sites with m6anet"
+when = 'config.protocol == "directRNA" && !config.skip_modification_analysis && !config.skip_m6anet && config.nanopolish_fast5 != ""'
+depends_on = ["m6anet_dataprep"]
+shell = """
+m6anet-run_inference \\
+    --input_dir {input[0]} \\
+    --out_dir {config.out_dir}/rna_modifications/m6anet/inference/{sample}_results \\
+    --batch_size 512 \\
+    --n_processes {threads} \\
+    --num_iterations 5 \\
+    --device cpu
+"""
+
+[rules.resources]
+threads = 6
+memory = "42G"
+
+[rules.environment]
+docker = "docker.io/yuukiiwa/m6anet:1.0"

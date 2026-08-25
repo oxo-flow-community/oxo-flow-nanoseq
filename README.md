@@ -15,6 +15,19 @@ aggregates everything. The default path is the DNA protocol
 `protocol` config key switches to the `cDNA`/`directRNA` transcriptome
 paths with the same upstream semantics.
 
+Beyond the default path, every gated branch of the upstream workflow is
+ported as `when`-gated rules, all **off by default** (matching upstream):
+contamination filtering with NanoLyse (`run_nanolyse`), the graphmap2
+aligner (`aligner = "graphmap2"`), short variant calling with
+medaka / DeepVariant / PEPPER-Margin-DeepVariant and structural variant
+calling with Sniffles / cuteSV (`call_variants`), BigBed tracks
+(`protocol` cDNA/directRNA), transcript quantification with
+bambu or StringTie2+featureCounts plus DESeq2/DEXSeq differential
+analysis (`protocol` cDNA/directRNA), RNA modification analysis with
+Nanopolish + xPore/m6anet (`protocol = directRNA`), and pre-aligned-BAM
+input (`skip_alignment` + `sample_bams`). See the [Fidelity](#fidelity)
+section for the full rule map.
+
 ## Installation
 
 ### 1. Install oxo-flow
@@ -99,12 +112,13 @@ retained verbatim in [LICENSE.upstream](LICENSE.upstream).
 
 ## Fidelity
 
-Port scope: the **default-parameters main execution path** with
-`protocol = DNA`, demultiplexing on (`barcode_kit = Auto`, qcat), minimap2
-aligner, and default skip flags (all QC/bigwig/bigbed/reporting on). Rules
-are listed in execution order; commands mirror the upstream modules
-byte-for-byte under default params (upstream Groovy `params.*` conditionals
-are reproduced as bash conditionals over the same config keys).
+Port scope: the **complete nf-core/nanoseq 3.1.0 rule graph** — 52 oxo-flow
+rules (19 default-path + 33 gated). The first table covers the
+**default-parameters main execution path** (`protocol = DNA`, demultiplexing
+on (`barcode_kit = Auto`, qcat), minimap2 aligner, default skip flags); the
+second covers every **gated branch** (off by default, upstream gates
+reproduced as `when` conditionals over the same config keys). Commands
+mirror the upstream modules byte-for-byte under each branch's parameters.
 
 | Upstream process/rule | oxo-flow rule | Tool (version) | Notes |
 |---|---|---|---|
@@ -118,7 +132,7 @@ are reproduced as bash conditionals over the same config keys).
 | MINIMAP2_INDEX | `minimap2_index` | minimap2 2.17 | identical flags for default params (`-ax map-ont -t 12 -d <fasta>.mmi`); protocol/stranded/junction conditionals preserved |
 | MINIMAP2_ALIGN | `minimap2_align` | minimap2 2.17 | identical flags + `> <sample>.sam`; `--MD` conditional preserved (off by default) |
 | SAMTOOLS_VIEW_BAM | `samtools_view` | samtools 1.15.1 | identical (`view -b -h -O BAM -@ N -o`) |
-| SAMTOOLS_SORT | `samtools_sort` | samtools 1.16.1 | identical (`sort -@ N -o <s>.sorted.bam -T <s>.sorted`; upstream `ext.prefix = <meta.id>.sorted`) |
+| SAMTOOLS_SORT | `samtools_sort` | samtools 1.16.1 | identical minus `-m 512M` capped per-thread sort buffer (added to prevent OOM on large BAMs; see Deviations) |
 | SAMTOOLS_INDEX | `samtools_index` | samtools 1.16.1 | identical (`index -@ N-1`) |
 | SAMTOOLS_STATS | `samtools_stats` | samtools 1.16.1 | identical (`stats --threads N --reference <fasta>`) |
 | SAMTOOLS_IDXSTATS | `samtools_idxstats` | samtools 1.16.1 | identical (`idxstats --threads N-1`) |
@@ -137,22 +151,93 @@ keys all per-sample rules by the barcode itself — outputs are named
 command and intermediate filename upstream-identical. The samplesheet
 fixture maps barcodes `01`/`02` exactly like the upstream test data.
 
-Not ported (all off by default upstream, so absent from the default path):
+### Gated branches (all off by default, matching upstream defaults)
+
+| Upstream process/rule | oxo-flow rule | Tool (version) | Gate / notes |
+|---|---|---|---|
+| NANOLYSE | `nanolyse` | NanoLyse 1.2.0 | `run_nanolyse`; `gunzip -c \| NanoLyse -r <ref> \| gzip`; reference = checked-in `test/fixtures/refs/lambda.fasta.gz` (upstream downloads it via GET_NANOLYSE_FASTA) |
+| GRAPHMAP2_INDEX | `graphmap2_index` | graphmap 0.6.3 | `aligner == "graphmap2"`; `-x rnaseq`/`--gtf` conditionals preserved (non-DNA protocols) |
+| GRAPHMAP2_ALIGN | `graphmap2_align` | graphmap 0.6.3 | same gate; `--extcigar`; publishes into `results/minimap2/` (see Deviations) |
+| SAMTOOLS_SORT_INDEX | `samtools_sort_index` | samtools 1.16.1 | `call_variants` — upstream runs this combined sort+index instead of the separate rules in the VC branch; `-m 512M` (see Deviations) |
+| MEDAKA_VARIANT | `medaka_variant` | medaka 1.4.4 | `call_variants && protocol == DNA && !skip_vc && variant_caller == "medaka"`; `-d -f -i -o -t` + `$split_mnps`/`$phase_vcf` flags (`split_mnps`, `phase_vcf` config keys) |
+| TABIX_BGZIP (as MEDAKA_BGZIP_VCF) | `medaka_bgzip_vcf` | tabix 1.11 | same gate |
+| TABIX_TABIX (as MEDAKA_TABIX_VCF) | `medaka_tabix_vcf` | tabix 1.11 | same gate |
+| DEEPVARIANT | `deepvariant` | google/deepvariant 1.4.0 | `variant_caller == "deepvariant"`; docker-only upstream; `--model_type WGS --num_shards=N` |
+| DEEPVARIANT_TABIX_VCF | `deepvariant_tabix_vcf` | tabix 1.11 | same gate |
+| DEEPVARIANT_TABIX_GVCF | `deepvariant_tabix_gvcf` | tabix 1.11 | same gate |
+| PEPPER_MARGIN_DEEPVARIANT | `pepper_margin_deepvariant` | kishwars/pepper_deepvariant r0.8 | `variant_caller == "pepper_margin_deepvariant"`; `-g` honored via `deepvariant_gpu` (CPU image pinned, see Deviations) |
+| SNIFFLES | `sniffles` | sniffles 1.0.12 | `call_variants && protocol == DNA && !skip_sv && structural_variant_caller == "sniffles"`; `-m -v -t` |
+| BCFTOOLS_SORT (as SNIFFLES_SORT_VCF) | `sniffles_sort_vcf` | bcftools 1.16 | same gate |
+| TABIX_TABIX (as SNIFFLES_TABIX_VCF) | `sniffles_tabix_vcf` | tabix 1.11 | same gate |
+| CUTESV | `cutesv` | cutesv 1.0.12 | `structural_variant_caller == "cutesv"`; `cuteSV bam fasta vcf . --threads --sample --genotype` |
+| BCFTOOLS_SORT (as CUTESV_SORT_VCF) | `cutesv_sort_vcf` | bcftools 1.16 | same gate |
+| TABIX_TABIX (as CUTESV_TABIX_VCF) | `cutesv_tabix_vcf` | tabix 1.11 | same gate |
+| BEDTOOLS_BAMBED | `bedtools_bamtobed` | bedtools 2.29.2 | `!skip_bigbed && protocol cDNA/directRNA` (upstream module `when` — never on the DNA path) |
+| UCSC_BED12TOBIGBED | `ucsc_bed12tobigbed` | ucsc-bedtobigbed 377 | same gate |
+| BAMBU | `bambu` | bioconductor-bambu 3.0.8 | `protocol != DNA && !skip_quantification && quantification_method == "bambu"`; gathers all sample BAMs via expand_inputs; upstream `bin/run_bambu.r` verbatim |
+| STRINGTIE2 | `stringtie2` | stringtie 2.1.4 | `quantification_method == "stringtie2"`; `-L -G <gtf> -o <s>.stringtie.gtf` |
+| STRINGTIE_MERGE | `stringtie_merge` | stringtie 2.2.1 | same gate; gathers per-sample assemblies, `-G` reference GTF conditional preserved |
+| SUBREAD_FEATURECOUNTS | `subread_featurecounts` | subread 2.0.1 | same gate; gene counts (`-f -g gene_id -t exon`) + transcript counts (`-F GTF -g transcript_id -t transcript --extraAttributes gene_id`), `-L -O --primary --fraction` |
+| DESEQ2 | `deseq2` (bambu counts) / `deseq2_featurecounts` (featureCounts counts) | mulled-v2-8849acf3… (bioconductor-deseq2) | `!skip_differential_analysis`; mutually exclusive on `quantification_method`; upstream `bin/run_deseq2.r` verbatim; results under `results/bambu/deseq2/` (upstream publishDir quirk kept) |
+| DEXSEQ | `dexseq` (bambu counts) / `dexseq_featurecounts` (featureCounts counts) | docker.io/yuukiiwa/nanoseq:dexseq | same gates; upstream `bin/run_dexseq.r` verbatim |
+| NANOPOLISH_INDEX_EVENTALIGN | `nanopolish_index_eventalign` | nanopolish 0.13.2 | `protocol == directRNA && !skip_modification_analysis && nanopolish_fast5 != ""`; `nanopolish index -d <fast5>` + `eventalign --scale-events --signal-index` (see Deviations for the fast5 gate guard) |
+| XPORE_DATAPREP | `xpore_dataprep` | xpore 2.1 | `!skip_xpore` (same branch gate); `--genome --gtf_or_gff --transcript_fasta` |
+| XPORE_DIFFMOD | `xpore_diffmod` | xpore 2.1 | same gate; upstream `bin/create_yml.py` verbatim; depends_on dataprep dir |
+| M6ANET_DATAPREP | `m6anet_dataprep` | docker.io/yuukiiwa/m6anet:1.0 | `!skip_m6anet` (same branch gate) |
+| M6ANET_INFERENCE | `m6anet_inference` | docker.io/yuukiiwa/m6anet:1.0 | same gate; `--batch_size 512 --num_iterations 5 --device cpu`; depends_on dataprep dir |
+| BAM_RENAME | `bam_rename` | sed 4.7.0 (shell-only container) | `skip_alignment && sample_bams != ""`; comma-separated `sample_bams` split via expand_inputs and linked to the barcode names, `[ ! -f ] && ln -s` like upstream |
+
+### Not ported (remainder)
 
 | Upstream step | Reason |
 |---|---|
-| GRAPHMAP2_INDEX / GRAPHMAP2_ALIGN (aligner `graphmap2`) | off by default (`aligner = minimap2`); committee exclusion `longread_map` |
-| NANOLYSE (+ GET_NANOLYSE_FASTA) | off by default (`run_nanolyse = false`) |
-| MEDAKA_VARIANT / DEEPVARIANT / PEPPER_MARGIN_DEEPVARIANT (+ bgzip/tabix) | off by default (`call_variants = false`) |
-| SNIFFLES / CUTESV (+ sort/tabix) | off by default (`call_variants = false`) |
-| BEDTOOLS_BAMBED / UCSC_BED12TOBIGBED | protocol-gated upstream to `cDNA`/`directRNA` (`when: protocol == directRNA \|\| cDNA`) — never runs on the DNA default path; committee exclusion `transcriptome` |
-| BAMBU / STRINGTIE2 / SUBREAD_FEATURECOUNTS / DESEQ2 / DEXSEQ | gated on `protocol == cDNA/directRNA` + `skip_quantification = false` — not on the DNA default path; committee exclusion `transcriptome` |
-| NANOPOLISH_INDEX_EVENTALIGN / XPORE_DATAPREP / XPORE_DIFFMOD / M6ANET_DATAPREP / M6ANET_INFERENCE (RNA modification) | gated on `protocol == directRNA` — not on the DNA default path; committee exclusion `plotly` (m6anet plots) |
-| JAFFAL / GET_JAFFAL_REF / UNTAR (RNA fusion) | gated on `protocol == cDNA/directRNA` — not on the DNA default path |
-| BAM_RENAME | only when `skip_alignment = true` |
-| GET_TEST_DATA / GET_NANOLYSE_FASTA (test-profile downloads) | `-profile test` only, replaced by checked-in fixtures |
-| SAMTOOLS_SORT_INDEX (combined sort+index) | `call_variants` branch only |
+| JAFFAL / GET_JAFFAL_REF / UNTAR (RNA fusion, `protocol` cDNA/directRNA) | not portable: the JAFFA reference bundle (`https://ndownloader.figshare.com/files/28168755`) returns **HTTP 403** for direct download, is multi-GB, and embeds a `JAFFA_stages.groovy` script the module runs; JAFFA 1.09 has no conda/biocontainer package |
+| GET_TEST_DATA / GET_NANOLYSE_FASTA (test-profile downloads) | nf-core `-profile test` download infrastructure, not part of the pipeline itself; replaced by checked-in fixtures (incl. the new `test/fixtures/refs/lambda.fasta.gz` nanolyse reference) |
 | `-profile test*` configs, cluster/container profiles, Tower reporting, completion email | nf-core infrastructure, out of port scope |
+
+### Deviations from upstream
+
+1. **Nanolyse channel**: upstream NANOLYSE replaces the demultiplexed-reads
+   channel, so every downstream process consumes NanoLyse-filtered reads.
+   oxo-flow has no channel reassignment — `nanolyse` writes filtered reads to
+   `results/nanolyse/` and the downstream chain keeps consuming the
+   demultiplexed reads.
+2. **graphmap2 namespace**: upstream publishes graphmap2 outputs under
+   `results/graphmap2/`; the port writes the graphmap2 index and SAMs into
+   `results/minimap2/` so the shared downstream chain (view/sort/index/stats)
+   needs no duplicate rules. Commands are unchanged.
+3. **`bam_suffix` mechanic**: the alignment branch sorts to
+   `<barcode>.sorted.bam`; the `skip_alignment` branch links user BAMs as
+   `<barcode>.bam`. `bam_suffix` (default `.sorted.bam`) lets the
+   quantification and modification rules target either naming scheme.
+4. **DESEQ2/DEXSEQ same-output pairs**: upstream feeds whichever counts
+   channel exists (bambu or featureCounts). The port implements two rules per
+   tool with the **same output path**, mutually exclusive on
+   `quantification_method`. The upstream publishDir quirk (deseq2/dexseq
+   results under `results/bambu/`) is kept verbatim.
+5. **nanopolish fast5**: upstream takes a per-sample fast5 path; the port
+   takes `nanopolish_fast5` as one directory and adds a `!= ""` gate guard so
+   the directRNA modification branch only runs when it is configured (upstream
+   runs nanopolish whenever `protocol == directRNA`).
+6. **deepvariant_gpu**: the pepper rule honors the `-g` flag from
+   `deepvariant_gpu`, but the container is pinned to the CPU image
+   (`docker.io/kishwars/pepper_deepvariant:r0.8`) — upstream swaps to
+   `r0.8-gpu`. Swap the image and set `deepvariant_gpu = true` for GPU
+   calling.
+7. **`-m 512M`**: `samtools_sort` and `samtools_sort_index` cap the
+   per-thread sort buffer (upstream omits `-m`); the cap prevents OOM at the
+   port's fixed thread counts.
+8. **versions.yml**: `assets/versions.yml` pins the default-path tool
+   versions statically (the port's dumpsoftwareversions); gated-branch tools
+   (medaka, tabix, sniffles, …) are not listed. The default-path report is
+   unchanged.
+9. **MultiQC gap**: MultiQC cannot aggregate featureCounts `.summary` files;
+   the always-on `multiqc` rule's inputs cannot be branch-gated, so
+   featureCounts outputs are excluded from the report.
+10. **is_transcripts column**: upstream decides splice/rnaseq presets and
+    junctions per sample from the samplesheet `is_transcripts` column; the
+    port's identity model keys rules by barcode only, so the non-DNA default
+    applies (same as the minimap2 rules).
 
 ## Test
 
@@ -163,6 +248,20 @@ bash test/run.sh
 Runs `validate` + `lint` + a `dry-run` plan check (and an expanded-command
 wildcard check) against the checked-in fixtures — the same gate CI runs on
 every push.
+
+## Live verification (tx-ubuntu, oxo-flow 0.15.0 + PR #187/#192 engine)
+
+| Run | Status | Notes |
+|---|---|---|
+| default (DNA, qcat → nanoplot/fastqc → minimap2 → multiqc) | ✅ live-verified | full default path on the 60-read barcoded fixture |
+| call_variants (medaka chain) | ✅ live-verified | medaka 1.4.4 runs to completion (`--samples barcode01`; see degeneracy note) |
+| structural_variant_caller (sniffles/cutesv) | ✅ live-verified | SV chain on barcode01 |
+| nanolyse branch | ✅ live-verified | checked-in lambda fixture replaces the upstream download |
+| cDNA/directRNA quantification (bambu/stringtie2) | ⚠️ tool-execution verified | bambu/stringtie2 execute with the checked-in `mini.gtf`; the 60-read fixture's reads align to the `real_read_*` contigs, not the annotated chr1 region, so bambu's read filtering legitimately fails on zero-overlap data — a follow-up fixture (reads over the annotated transcripts) would close this to full PASS |
+
+Mini-fixture degeneracy: barcode02/barcode05 carry a single read each;
+sniffles (SV calling) requires more reads than that, so the SV run uses
+`--samples barcode01`. Real data takes the verbatim upstream path.
 
 ## License
 

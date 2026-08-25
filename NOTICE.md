@@ -28,7 +28,9 @@ it from the upstream repository at the ported commit
 retained.)
 
 Additional upstream files copied verbatim into this repository
-(check_samplesheet.py, bin/gtf2bed, assets/multiqc_config.yml, and the
-dumpsoftwareversions.py template) are MIT-licensed by their respective
-authors as part of nf-core/nanoseq.
+(check_samplesheet.py, bin/gtf2bed, assets/multiqc_config.yml, the
+dumpsoftwareversions.py template, and the scripts/ helpers
+create_yml.py, run_bambu.r, run_deseq2.r, run_dexseq.r — the last three
+under the name run_<tool> in upstream bin/) are MIT-licensed by their
+respective authors as part of nf-core/nanoseq.
 ---------------------------------------------------------------------
