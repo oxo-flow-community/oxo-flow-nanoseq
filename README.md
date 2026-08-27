@@ -191,8 +191,8 @@ fixture maps barcodes `01`/`02` exactly like the upstream test data.
 
 | Upstream step | Reason |
 |---|---|
-| JAFFAL / GET_JAFFAL_REF / UNTAR (RNA fusion, `protocol` cDNA/directRNA) | not portable: the JAFFA reference bundle (`https://ndownloader.figshare.com/files/28168755`) returns **HTTP 403** for direct download, is multi-GB, and embeds a `JAFFA_stages.groovy` script the module runs; JAFFA 1.09 has no conda/biocontainer package |
-| GET_TEST_DATA / GET_NANOLYSE_FASTA (test-profile downloads) | nf-core `-profile test` download infrastructure, not part of the pipeline itself; replaced by checked-in fixtures (incl. the new `test/fixtures/refs/lambda.fasta.gz` nanolyse reference) |
+| JAFFAL / GET_JAFFAL_REF / UNTAR (RNA fusion, `protocol` cDNA/directRNA) | not portable: the JAFFA reference bundle (`https://ndownloader.figshare.com/files/28168755`) redirects to a signed S3 URL that returns **HTTP 403** (verified 2026-08), is multi-GB, and embeds the `JAFFA_stages.groovy` script the module executes via `bpipe run` — the process cannot run without the bundle |
+| GET_TEST_DATA / GET_NANOLYSE_FASTA (upstream download processes) | GET_TEST_DATA is nf-core `-profile test` infrastructure (clones `nf-core/test-datasets`); GET_NANOLYSE_FASTA fetches the lambda genome whenever `run_nanolyse=true` without `--nanolyse_fasta` (any profile). Both are replaced by checked-in fixtures — the nanolyse reference ships as `test/fixtures/refs/lambda.fasta.gz` |
 | `-profile test*` configs, cluster/container profiles, Tower reporting, completion email | nf-core infrastructure, out of port scope |
 
 ### Deviations from upstream
