@@ -59,8 +59,8 @@ qcat_min_score = 60
 qcat_detect_middle = false
 skip_demultiplexing = false
 # -- Raw read cleaning (upstream default: off). Upstream downloads the
-#    lambda genome when --nanolyse_fasta is unset (GET_NANOLYSE_FASTA,
-#    test-profile only); the port ships it as a checked-in fixture.
+#    lambda genome when --nanolyse_fasta is unset (GET_NANOLYSE_FASTA);
+#    the port ships it as a checked-in fixture.
 run_nanolyse = false
 nanolyse_fasta = "test/fixtures/refs/lambda.fasta.gz"
 # -- Alignment
