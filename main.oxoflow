@@ -120,6 +120,13 @@ skip_modification_analysis = false
 skip_xpore = false
 skip_m6anet = false
 nanopolish_fast5 = ""
+# -- RNA fusion analysis (upstream default: on, gated to protocol
+#    cDNA/directRNA; skip_fusion_analysis / jaffal_ref_dir). The reference
+#    bundle is auto-downloaded from figshare when jaffal_ref_dir is unset
+#    (upstream GET_JAFFAL_REF + UNTAR); a user-supplied path is untarred
+#    (.tar.gz/.tgz/.tar) or symlinked (directory) instead, A12-style.
+skip_fusion_analysis = false
+jaffal_ref_dir = ""
 # -- MultiQC options
 multiqc_title = ""
 multiqc_config = ""
@@ -1636,3 +1643,96 @@ memory = "42G"
 
 [rules.environment]
 docker = "docker.io/yuukiiwa/m6anet:1.0"
+
+# ---------------------------------------------------------------------------
+# 53-54. RNA fusion detection (upstream: RNA_FUSIONS_JAFFAL = GET_JAFFAL_REF
+#     + UNTAR + JAFFAL, gated on !skip_fusion_analysis && protocol
+#     cDNA/directRNA — off on the default DNA path).
+#     GET_JAFFAL_REF downloads the figshare reference bundle
+#     (https://ndownloader.figshare.com/files/28168755); UNTAR extracts it
+#     into for_jaffal/ (the bundle's own top-level dir — upstream relies on
+#     the archive name, so the port extracts in place like a user-supplied
+#     untar path would). A user-supplied config.jaffal_ref_dir replaces the
+#     download: archives are untarred into the canonical dir
+#     (results/jaffal/for_jaffal, A12 pattern), directories are symlinked.
+#     JAFFAL then runs the bundled JAFFAL.groovy through bpipe with
+#     -p refBase=<ref dir>, exactly like upstream (the -p override points
+#     the stages' refBase at the extracted/user dir instead of the script
+#     dir). Outputs: *.fasta (merged candidate sequences) and *.csv
+#     (jaffa_results) written to the workdir — the port moves them under
+#     results/jaffal/ (upstream publishes them from the workdir verbatim).
+# ---------------------------------------------------------------------------
+[[rules]]
+name = "get_jaffal_ref"
+output = ["{config.out_dir}/jaffal/for_jaffal.tar.gz"]
+description = "Download the JAFFA reference bundle from figshare"
+when = 'config.protocol != "DNA" && !config.skip_fusion_analysis && config.jaffal_ref_dir == ""'
+shell = """
+curl -L https://ndownloader.figshare.com/files/28168755 -o {output[0]}
+"""
+
+[rules.resources]
+threads = 1
+memory = "6G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/curl:7.71.1"
+
+[[rules]]
+name = "jaffal_ref"
+input = [
+    "{config.out_dir}/qcat/fastq/{sample}.fastq.gz",
+    # get_jaffal_ref output — only consumed on the auto-download branch
+    # (config.jaffal_ref_dir == ""); declared so the DAG orders extraction
+    # after the download. On a user-supplied path the file is absent, but
+    # the shell reads it only in the else branch.
+    "{config.out_dir}/jaffal/for_jaffal.tar.gz",
+]
+output = [
+    "{config.out_dir}/jaffal/{sample}.fasta",
+    "{config.out_dir}/jaffal/{sample}.csv",
+]
+description = "Detect RNA fusions with JAFFAL (bpipe)"
+depends_on = ["get_jaffal_ref"]
+when = 'config.protocol != "DNA" && !config.skip_fusion_analysis'
+shell = """
+REF=""
+if [ -n "{config.jaffal_ref_dir}" ]; then
+    case "{config.jaffal_ref_dir}" in
+    *.tar.gz|*.tgz|*.tar)
+        # Extraction is idempotent: with multiple parallel samples the
+        # first writer wins, the rest reuse the same extracted dir (the
+        # bundle is 4.5G unpacked — re-extracting per sample would
+        # multiply both disk and wall-clock).
+        if [ ! -f {config.out_dir}/jaffal/for_jaffal/JAFFAL.groovy ]; then
+            rm -rf {config.out_dir}/jaffal/for_jaffal
+            mkdir -p {config.out_dir}/jaffal/for_jaffal
+            tar -xzf "{config.jaffal_ref_dir}" -C {config.out_dir}/jaffal/for_jaffal 2>/dev/null \\
+                || tar -xf "{config.jaffal_ref_dir}" -C {config.out_dir}/jaffal/for_jaffal
+        fi
+        REF={config.out_dir}/jaffal/for_jaffal/for_jaffal
+        ;;
+    *)
+        REF={config.jaffal_ref_dir}
+        ;;
+    esac
+else
+    # Same idempotent extraction guard on the auto-download branch.
+    if [ ! -f {config.out_dir}/jaffal/for_jaffal/JAFFAL.groovy ]; then
+        rm -rf {config.out_dir}/jaffal/for_jaffal
+        mkdir -p {config.out_dir}/jaffal/for_jaffal
+        tar -xzf {input[1]} -C {config.out_dir}/jaffal/for_jaffal
+    fi
+    REF={config.out_dir}/jaffal/for_jaffal/for_jaffal
+fi
+
+bpipe run -p refBase=$REF $REF/JAFFAL.groovy {input[0]}
+mv *.fasta *.csv {config.out_dir}/jaffal/
+"""
+
+[rules.resources]
+threads = 6
+memory = "42G"
+
+[rules.environment]
+docker = "quay.io/biocontainers/jaffa:2.3--hdfd78af_0"

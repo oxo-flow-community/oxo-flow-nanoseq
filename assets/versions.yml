@@ -42,3 +42,7 @@
     ucsc_bedgraphtobigwig: 377
 "nanoseq:multiqc":
     multiqc: 1.11
+"nanoseq:get_jaffal_ref":
+    curl: 7.71.1
+"nanoseq:jaffal_ref":
+    jaffa: 2.3

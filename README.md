@@ -186,12 +186,12 @@ fixture maps barcodes `01`/`02` exactly like the upstream test data.
 | M6ANET_DATAPREP | `m6anet_dataprep` | docker.io/yuukiiwa/m6anet:1.0 | `!skip_m6anet` (same branch gate) |
 | M6ANET_INFERENCE | `m6anet_inference` | docker.io/yuukiiwa/m6anet:1.0 | same gate; `--batch_size 512 --num_iterations 5 --device cpu`; depends_on dataprep dir |
 | BAM_RENAME | `bam_rename` | sed 4.7.0 (shell-only container) | `skip_alignment && sample_bams != ""`; comma-separated `sample_bams` split via expand_inputs and linked to the barcode names, `[ ! -f ] && ln -s` like upstream |
+| GET_JAFFAL_REF + UNTAR + JAFFAL (RNA fusion, `protocol` cDNA/directRNA) | `get_jaffal_ref` + `jaffal_ref` (per-sample instances) | curl 7.71.1 / jaffa 2.3--hdfd78af_0 | `get_jaffal_ref` downloads the figshare bundle only when `jaffal_ref_dir == ""` (browser UA; see Deviations 5); `jaffal_ref` accepts `jaffal_ref_dir` as a pre-extracted directory or tar.gz (idempotent extraction into `results/jaffal/for_jaffal/`, safe under parallel samples), else consumes the downloaded bundle; runs `bpipe run -p refBase=… JAFFAL.groovy <fastq>` and moves `*.fasta *.csv` to `results/jaffal/` |
 
 ### Not ported (remainder)
 
 | Upstream step | Reason |
 |---|---|
-| JAFFAL / GET_JAFFAL_REF / UNTAR (RNA fusion, `protocol` cDNA/directRNA) | not portable: the JAFFA reference bundle (`https://ndownloader.figshare.com/files/28168755`) redirects to a signed S3 URL that returns **HTTP 403** (verified 2026-08), is multi-GB, and embeds the `JAFFA_stages.groovy` script the module executes via `bpipe run` — the process cannot run without the bundle |
 | GET_TEST_DATA / GET_NANOLYSE_FASTA (upstream download processes) | GET_TEST_DATA is nf-core `-profile test` infrastructure (clones `nf-core/test-datasets`); GET_NANOLYSE_FASTA fetches the lambda genome whenever `run_nanolyse=true` without `--nanolyse_fasta` (any profile). Both are replaced by checked-in fixtures — the nanolyse reference ships as `test/fixtures/refs/lambda.fasta.gz` |
 | `-profile test*` configs, cluster/container profiles, Tower reporting, completion email | nf-core infrastructure, out of port scope |
 
@@ -238,6 +238,17 @@ fixture maps barcodes `01`/`02` exactly like the upstream test data.
     junctions per sample from the samplesheet `is_transcripts` column; the
     port's identity model keys rules by barcode only, so the non-DNA default
     applies (same as the minimap2 rules).
+11. **jaffal reference handling**: upstream splits the figshare bundle across
+    GET_JAFFAL_REF → UNTAR → JAFFAL with the tar.gz flowing through channels.
+    The port merges this into two rules: `get_jaffal_ref` downloads the
+    1.9 GB bundle only when `jaffal_ref_dir == ""` (a browser UA is required —
+    curl's default UA gets HTTP 403 from figshare's CDN), and `jaffal_ref`
+    accepts `jaffal_ref_dir` as a pre-extracted directory or a tar.gz with an
+    idempotent extraction guard (JAFFAL.groovy sentinel) so parallel sample
+    instances never re-extract or clobber the ~4.5 GB unpacked tree. The
+    `bpipe run -p refBase=… JAFFAL.groovy` invocation is verbatim upstream.
+    Note: the upstream module declares container `jaffa:2.3`; the JAFFAL
+    stages banner reports jaffa 2.0 — cosmetic only.
 
 ## Test
 
