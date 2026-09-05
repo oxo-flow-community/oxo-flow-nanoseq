@@ -112,8 +112,8 @@ retained verbatim in [LICENSE.upstream](LICENSE.upstream).
 
 ## Fidelity
 
-Port scope: the **complete nf-core/nanoseq 3.1.0 rule graph** — 52 oxo-flow
-rules (19 default-path + 33 gated). The first table covers the
+Port scope: the **complete nf-core/nanoseq 3.1.0 rule graph** — 54 oxo-flow
+rules (18 default-path + 36 gated). The first table covers the
 **default-parameters main execution path** (`protocol = DNA`, demultiplexing
 on (`barcode_kit = Auto`, qcat), minimap2 aligner, default skip flags); the
 second covers every **gated branch** (off by default, upstream gates
