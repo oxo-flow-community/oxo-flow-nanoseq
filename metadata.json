@@ -94,6 +94,7 @@
     "minimap2",
     "bedtools",
     "ucsc-bedgraphtobigwig",
+    "ucsc-bedtobigbed",
     "multiqc",
     "nanolyse",
     "graphmap",
