@@ -702,7 +702,11 @@ expand_inputs = [
     { pattern = "{config.out_dir}/minimap2/samtools_stats/{sample}.flagstat",  variables = { sample = "config.samples_list" } },
     { pattern = "{config.out_dir}/minimap2/samtools_stats/{sample}.idxstats",  variables = { sample = "config.samples_list" } },
 ]
-output = ["{config.out_dir}/multiqc/minimap2/multiqc_report.html"]
+output = [
+    "{config.out_dir}/multiqc/minimap2/multiqc_report.html",
+    "{config.out_dir}/multiqc/minimap2/multiqc_data/",
+    "{config.out_dir}/multiqc/minimap2/multiqc_plots/",
+]
 description = "Aggregate QC and alignment stats into a MultiQC report"
 when = "!config.skip_multiqc"
 shell = """
