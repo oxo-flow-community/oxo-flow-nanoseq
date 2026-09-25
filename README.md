@@ -260,7 +260,12 @@ Runs `validate` + `lint` + a `dry-run` plan check (and an expanded-command
 wildcard check) against the checked-in fixtures — the same gate CI runs on
 every push.
 
-## Live verification (tx-ubuntu, oxo-flow 0.15.0 + PR #187/#192 engine)
+## Live verification
+
+Latest full-pipeline live runs: bioinfo-wsx (Docker, oxo-flow 0.20.1 +
+PR #11 re-run-loop fix; 2026-09-25) and earlier tx-ubuntu (oxo-flow 0.15.0
++ PR #187/#192 engine). Second consecutive run after the fix is all-skip:
+0 re-runs, 89 skipped, no "missing intermediate inputs" lines.
 
 | Run | Status | Notes |
 |---|---|---|
