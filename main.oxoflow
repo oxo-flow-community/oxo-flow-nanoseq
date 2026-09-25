@@ -412,10 +412,16 @@ name = "minimap2_align"
 input = [
     "{config.out_dir}/qcat/fastq/{sample}.fastq.gz",
     "{config.out_dir}/minimap2/{config.reference_name}.mmi",
-    # gtf2bed output, referenced by the shell's --junc-bed flag — declared
-    # so the DAG orders alignment after the BED conversion.
-    "{config.out_dir}/genome/{config.gtf_base}.bed",
+    # The shell's optional --junc-bed flag consumes the gtf2bed output, but
+    # it is NOT declared as an input: with gtf_base = "" (the default DNA
+    # path) the pattern would expand to results/genome/.bed, which never
+    # exists (gtf2bed is when-gated off) — the engine then records an empty
+    # input manifest at completion and every re-run reports the file as
+    # "missing intermediate inputs", cascading a permanent 21-rule re-run
+    # loop (live-caught on bioinfo-wsx 2026-09-24). Ordering when gtf IS
+    # set is preserved by the explicit depends_on edge below.
 ]
+depends_on = ["gtf2bed"]
 output = ["{config.out_dir}/minimap2/{sample}.sam"]
 description = "Map reads with minimap2"
 when = '!config.skip_alignment && config.aligner == "minimap2"'
