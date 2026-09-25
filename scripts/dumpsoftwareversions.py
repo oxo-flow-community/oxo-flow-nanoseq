@@ -7,7 +7,8 @@ Ported verbatim from nf-core/nanoseq @ 3.1.0
 with the Nextflow/Groovy placeholders materialized:
   - $versions            -> argv[1] (the merged versions.yml input)
   - ${task.process}      -> "nanoseq:dumpsoftwareversions"
-  - $workflow.nextflow.version -> "oxo-flow 0.11.0"
+  - $workflow.nextflow.version -> probed at run time via `oxo-flow --version`
+    ("unknown" when the binary is not on PATH inside the container)
   - $workflow.manifest.* -> "nf-core/nanoseq" / "3.1.0"
 Output directory is argv[2]; the three yml files are written there.
 """
@@ -87,8 +88,24 @@ def main():
         except KeyError:
             versions_by_module[module] = process_versions
 
+    # Engine version probed at run time (upstream reads
+    # $workflow.nextflow.version); "unknown" when the oxo-flow binary is not
+    # on PATH inside the container.
+    engine_version = "unknown"
+    try:
+        import subprocess
+
+        probe = subprocess.run(
+            ["oxo-flow", "--version"], capture_output=True, text=True, timeout=30
+        )
+        version = probe.stdout.strip().removeprefix("oxo-flow ")
+        if probe.returncode == 0 and version:
+            engine_version = version
+    except Exception:
+        pass
+
     versions_by_module["Workflow"] = {
-        "Nextflow": "oxo-flow 0.11.0",
+        "oxo-flow": engine_version,
         "nf-core/nanoseq": "3.1.0",
     }
 

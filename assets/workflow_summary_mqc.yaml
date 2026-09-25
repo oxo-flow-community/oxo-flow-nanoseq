@@ -14,7 +14,7 @@ data: |
     <dt>Pipeline Version</dt><dd><samp>3.1.0</samp></dd>
     <dt>Protocol</dt><dd><samp>DNA</samp></dd>
     <dt>Aligner</dt><dd><samp>minimap2</samp></dd>
-    <dt>Barcode Kit</dt><dd><samp>Auto</samp></dd>
+    <dt>Barcode Kit</dt><dd><samp>RBK001</samp></dd>
     <dt>Demultiplexing</dt><dd><samp>enabled</samp></dd>
     <dt>NanoLyse</dt><dd><samp>disabled</samp></dd>
     <dt>Variant calling</dt><dd><samp>disabled</samp></dd>
